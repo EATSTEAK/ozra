@@ -1,0 +1,27 @@
+[package]
+name = "ozra"
+version = "0.0.1"
+edition = "2024"
+
+[features]
+default = ["client"]
+client = ["dep:reqwest", "dep:tokio", "dep:urlencoding"]
+
+[dependencies]
+thiserror = "2"
+cesu8 = "1"
+urlencoding = { version = "2", optional = true }
+reqwest = { version = "0.13.2", features = [
+  "cookies",
+  "rustls",
+], default-features = false, optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[example]]
+name = "fetch_abeek"
+required-features = ["client"]
