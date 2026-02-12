@@ -90,6 +90,22 @@ pub enum OzError {
     #[cfg(feature = "client")]
     #[error("unexpected HTTP status: {status}")]
     HttpStatus { status: u16 },
+
+    /// Repository 알 수 없는 상태 코드
+    #[error("unknown repository status: {status}")]
+    UnknownRepositoryStatus { status: i32 },
+
+    /// Repository 파일을 찾을 수 없음
+    #[error("repository file not found: {path}")]
+    RepositoryNotFound { path: String },
+
+    /// Repository 응답 파싱 실패
+    #[error("failed to parse repository response: {detail}")]
+    RepositoryParseError { detail: String },
+
+    /// Repository 압축 해제 실패
+    #[error("failed to decompress repository content")]
+    DecompressionError,
 }
 
 /// [`OzError`]를 사용하는 편의 Result 타입 별칭
@@ -212,5 +228,39 @@ mod tests {
     fn test_not_authenticated_display() {
         let err = OzError::NotAuthenticated;
         assert_eq!(err.to_string(), "not authenticated: must login first");
+    }
+
+    #[test]
+    fn test_unknown_repository_status_display() {
+        let err = OzError::UnknownRepositoryStatus { status: 99 };
+        assert_eq!(err.to_string(), "unknown repository status: 99");
+    }
+
+    #[test]
+    fn test_repository_not_found_display() {
+        let err = OzError::RepositoryNotFound {
+            path: "/CM/missing.ozr".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "repository file not found: /CM/missing.ozr"
+        );
+    }
+
+    #[test]
+    fn test_repository_parse_error_display() {
+        let err = OzError::RepositoryParseError {
+            detail: "unexpected EOF".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "failed to parse repository response: unexpected EOF"
+        );
+    }
+
+    #[test]
+    fn test_decompression_error_display() {
+        let err = OzError::DecompressionError;
+        assert_eq!(err.to_string(), "failed to decompress repository content");
     }
 }

@@ -39,6 +39,13 @@ pub const REPO_HEADER_MARKER: u32 = 0x0000_0100;
 /// 로그인 전 초기 세션 ID
 pub const INITIAL_SESSION_ID: &str = "-1905";
 
+/// Repository 응답 성공 클래스명
+pub const REPOSITORY_RESPONSE_CLASS: &str =
+    "oz.framework.cp.message.repositoryex.OZRepositoryResponseItem";
+
+/// OZ 프로토콜 예외 클래스명
+pub const EXCEPTION_MESSAGE_CLASS: &str = "oz.framework.cp.message.OZCPExceptionMessage";
+
 /// 클라이언트 프로토콜 버전
 pub const CLIENT_VERSION: &str = "20140527";
 

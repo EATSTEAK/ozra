@@ -1,4 +1,4 @@
-//! HTTP 클라이언트 모듈 — OZ 서버와의 세션 관리 및 5단계 통신 플로우
+//! HTTP 클라이언트 모듈 — OZ 서버와의 세션 관리 및 통신 플로우
 //!
 //! [`OzClient`]는 reqwest 기반 HTTP 클라이언트로, OZ 프로토콜의 전체 통신 플로우를 관리합니다.
 //!
@@ -6,20 +6,41 @@
 //!
 //! 1. [`init_session`](OzClient::init_session) — `GET /ozView.jsp` → JSESSIONID 쿠키 획득
 //! 2. [`login`](OzClient::login) — UserLogin 요청 → OZ 세션 ID 획득
-//! 3. [`fetch_repository`](OzClient::fetch_repository) — .ozr/.odi 파일 다운로드
-//! 4. [`fetch_data_module`](OzClient::fetch_data_module) — DataModule 데이터 조회
-//! 5. [`fetch_syllabus`](OzClient::fetch_syllabus) — 전체 플로우 통합 편의 메서드
+//! 3. [`send`](OzClient::send) — 제네릭 요청-응답 (타입 안전)
+//! 4. [`fetch_repository`](OzClient::fetch_repository) — .ozr/.odi 파일 다운로드 (편의 메서드)
+//! 5. [`fetch_data_module`](OzClient::fetch_data_module) — DataModule 데이터 조회 (편의 메서드)
+//!
+//! ## 제네릭 send 메서드
+//!
+//! [`OzRequestResponse`] trait을 구현한 모든 요청 타입에 대해 타입 안전한 요청-응답 처리가 가능합니다:
+//!
+//! ```ignore
+//! use ozra::messages::{RepositoryRequest, DataModuleRequest};
+//!
+//! // Repository 파일 다운로드
+//! let repo_req = RepositoryRequest::new("/CM/report.ozr");
+//! let repo_resp = client.send(&repo_req).await?;
+//! println!("Downloaded {} bytes", repo_resp.data.len());
+//!
+//! // DataModule 쿼리
+//! let dm_req = DataModuleRequest {
+//!     odi_name: "query.odi".to_string(),
+//!     category: "/CM".to_string(),
+//!     params: vec![("year".to_string(), "2026".to_string())],
+//! };
+//! let dm_resp = client.send(&dm_req).await?;
+//! println!("Datasets: {}", dm_resp.datasets.len());
+//! ```
 
 use reqwest::Client;
 
-use crate::codec::{
-    build_data_module_request, build_login_request, build_repository_request, check_error_result,
-    parse_data_module, parse_header,
-};
 use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
 use crate::error::{OzError, Result};
-use crate::types::{DataModuleResponse, OzMessageHeader};
-use crate::wire::BufReader;
+use crate::messages::{
+    DataModuleRequest, LoginRequest, LoginResponse, OzRequest, OzRequestResponse, OzResponse,
+    RepositoryRequest, check_error_result,
+};
+use crate::types::DataModuleResponse;
 
 /// OZ 서버 HTTP 클라이언트
 ///
@@ -38,8 +59,8 @@ use crate::wire::BufReader;
 ///     "guest",
 /// )?;
 /// client.init_session().await?;
-/// let header = client.login().await?;
-/// println!("Session ID: {:?}", header.session_id());
+/// let login_resp = client.login().await?;
+/// println!("Session ID: {}", login_resp.session_id);
 /// # Ok(())
 /// # }
 /// ```
@@ -192,6 +213,9 @@ impl OzClient {
     /// - Content-Type: `application/octet-stream`
     /// - 프로토콜 에러 자동 감지 ([`check_error_result`])
     ///
+    /// 이 메서드는 [`send`](Self::send) 메서드의 저수준 구현입니다.
+    /// 일반적으로 [`send`](Self::send)를 통해 타입 안전한 요청-응답을 사용하세요.
+    ///
     /// # 에러
     ///
     /// - [`OzError::Http`] — 네트워크 에러
@@ -222,23 +246,76 @@ impl OzClient {
         Ok(buf)
     }
 
+    /// 타입 안전한 요청-응답 메서드
+    ///
+    /// [`OzRequestResponse`] trait을 구현한 모든 요청 타입에 대해
+    /// 요청 빌드 → HTTP 전송 → 응답 파싱을 자동으로 수행합니다.
+    ///
+    /// 요청 타입에 연결된 응답 타입을 컴파일 타임에 추론하므로,
+    /// 잘못된 요청-응답 조합이 불가능합니다.
+    ///
+    /// # 인증 요구
+    ///
+    /// 이 메서드는 인증된 상태에서만 사용할 수 있습니다.
+    /// [`login()`](Self::login) 호출 후 사용하세요.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// use ozra::messages::{RepositoryRequest, DataModuleRequest};
+    ///
+    /// // Repository 파일 다운로드
+    /// let repo_req = RepositoryRequest::new("/CM/report.ozr");
+    /// let repo_resp = client.send(&repo_req).await?;
+    ///
+    /// // DataModule 쿼리
+    /// let dm_req = DataModuleRequest {
+    ///     odi_name: "query.odi".to_string(),
+    ///     category: "/CM".to_string(),
+    ///     params: vec![("year".to_string(), "2026".to_string())],
+    /// };
+    /// let dm_resp = client.send(&dm_req).await?;
+    /// ```
+    ///
+    /// # 에러
+    ///
+    /// - [`OzError::NotAuthenticated`] — 로그인되지 않은 상태
+    /// - [`OzError::Http`] — 네트워크 에러
+    /// - [`OzError::HttpStatus`] — 비정상 HTTP 상태 코드
+    /// - [`OzError::ProtocolError`] — 서버가 반환한 OZ 프로토콜 에러
+    /// - 응답 파싱 중 발생 가능한 모든 에러
+    pub async fn send<R>(&self, request: &R) -> Result<R::Response>
+    where
+        R: OzRequestResponse,
+    {
+        if !self.is_authenticated() {
+            return Err(OzError::NotAuthenticated);
+        }
+
+        let req_buf = request.build(&self.session_id)?;
+        let resp_buf = self.send_request(req_buf).await?;
+        R::Response::parse(&resp_buf)
+    }
+
     /// 로그인하여 OZ 세션 ID를 획득합니다.
     ///
-    /// `build_login_request()` → [`send_request()`](Self::send_request) → `parse_header()`
+    /// [`LoginRequest`]를 빌드하여 서버에 전송하고, [`LoginResponse`]를 파싱합니다.
     /// 응답 헤더의 `"s"` 필드에서 세션 ID를 추출하여 내부 상태를 업데이트합니다.
+    ///
+    /// > **참고**: 이 메서드는 인증 전에 호출되므로 [`send`](Self::send)를 사용하지 않고
+    /// > 직접 [`send_request`](Self::send_request)를 통해 요청을 전송합니다.
     ///
     /// # 에러
     ///
     /// - [`OzError::LoginFailed`] — 세션 ID가 여전히 `"-1905"`인 경우
     /// - `send_request`에서 발생 가능한 모든 에러
-    pub async fn login(&mut self) -> Result<OzMessageHeader> {
-        let req_buf = build_login_request(&self.username, &self.password)?;
+    pub async fn login(&mut self) -> Result<LoginResponse> {
+        let req = LoginRequest::new(&self.username, &self.password);
+        let req_buf = req.build(&self.session_id)?;
         let resp_buf = self.send_request(req_buf).await?;
+        let response = LoginResponse::parse(&resp_buf)?;
 
-        let mut reader = BufReader::new(&resp_buf);
-        let header = parse_header(&mut reader)?;
-
-        if let Some(sid) = header.session_id() {
+        if let Some(sid) = response.header.session_id() {
             self.session_id = sid.to_string();
         }
 
@@ -249,12 +326,13 @@ impl OzClient {
             });
         }
 
-        Ok(header)
+        Ok(response)
     }
 
     /// Repository 파일(.ozr, .odi)을 다운로드합니다.
     ///
-    /// `build_repository_request()` → [`send_request()`](Self::send_request)
+    /// 내부적으로 [`send`](Self::send)를 사용하여 [`RepositoryRequest`]를 전송하고,
+    /// 응답에서 raw 바이트를 추출하여 반환합니다.
     ///
     /// # 인자
     ///
@@ -263,19 +341,17 @@ impl OzClient {
     /// # 에러
     ///
     /// - [`OzError::NotAuthenticated`] — 로그인되지 않은 상태
-    /// - `send_request`에서 발생 가능한 모든 에러
+    /// - `send`에서 발생 가능한 모든 에러
     pub async fn fetch_repository(&self, path: &str) -> Result<Vec<u8>> {
-        if !self.is_authenticated() {
-            return Err(OzError::NotAuthenticated);
-        }
-
-        let req_buf = build_repository_request(path, &self.session_id)?;
-        self.send_request(req_buf).await
+        let req = RepositoryRequest::new(path);
+        let resp = self.send(&req).await?;
+        Ok(resp.data)
     }
 
     /// DataModule 데이터를 조회합니다.
     ///
-    /// `build_data_module_request()` → [`send_request()`](Self::send_request) → `parse_data_module()`
+    /// 내부적으로 [`send`](Self::send)를 사용하여 [`DataModuleRequest`]를 전송하고,
+    /// [`DataModuleResponse`]를 반환합니다.
     ///
     /// # 인자
     ///
@@ -286,20 +362,19 @@ impl OzClient {
     /// # 에러
     ///
     /// - [`OzError::NotAuthenticated`] — 로그인되지 않은 상태
-    /// - `send_request` 및 `parse_data_module`에서 발생 가능한 모든 에러
+    /// - `send`에서 발생 가능한 모든 에러
     pub async fn fetch_data_module(
         &self,
         odi_name: &str,
         category: &str,
         params: &[(String, String)],
     ) -> Result<DataModuleResponse> {
-        if !self.is_authenticated() {
-            return Err(OzError::NotAuthenticated);
-        }
-
-        let req_buf = build_data_module_request(odi_name, category, params, &self.session_id)?;
-        let resp_buf = self.send_request(req_buf).await?;
-        parse_data_module(&resp_buf)
+        let req = DataModuleRequest {
+            odi_name: odi_name.to_string(),
+            category: category.to_string(),
+            params: params.to_vec(),
+        };
+        self.send(&req).await
     }
 }
 
@@ -307,6 +382,9 @@ impl OzClient {
 mod tests {
     use super::*;
     use crate::constants::{INITIAL_SESSION_ID, REQUEST_FRAME_SIZE};
+    use crate::messages::{
+        build_data_module_request, build_login_request, build_repository_request,
+    };
 
     #[test]
     fn test_oz_client_new_default_session() {
@@ -347,19 +425,53 @@ mod tests {
 
     #[test]
     fn test_login_request_builds_correctly() {
-        // NOTE: Indirectly verifies that build_login_request is called correctly
+        // LoginRequest trait 기반 빌드 검증
+        let req = LoginRequest::new("guest", "guest");
+        let buf = req.build(INITIAL_SESSION_ID).unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_login_request_compat_builds_correctly() {
+        // 호환성 함수 검증
         let buf = build_login_request("guest", "guest").unwrap();
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_repository_request_builds_correctly() {
+        // RepositoryRequest trait 기반 빌드 검증
+        let req = RepositoryRequest::new("/CM/test.ozr");
+        let buf = req.build("12345").unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_repository_request_compat_builds_correctly() {
+        // 호환성 함수 검증
         let buf = build_repository_request("/CM/test.ozr", "12345").unwrap();
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_data_module_request_builds_correctly() {
+        // DataModuleRequest trait 기반 빌드 검증
+        let params = vec![
+            ("arg1".to_string(), "2026".to_string()),
+            ("arg2".to_string(), "090".to_string()),
+        ];
+        let req = DataModuleRequest {
+            odi_name: "test.odi".to_string(),
+            category: "/CM".to_string(),
+            params,
+        };
+        let buf = req.build("12345").unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_data_module_request_compat_builds_correctly() {
+        // 호환성 함수 검증
         let params = vec![
             ("arg1".to_string(), "2026".to_string()),
             ("arg2".to_string(), "090".to_string()),
@@ -385,6 +497,15 @@ mod tests {
         assert_eq!(client2.session_id(), INITIAL_SESSION_ID);
     }
 
+    /// send는 인증 전에 NotAuthenticated를 반환해야 함
+    #[tokio::test]
+    async fn test_send_not_authenticated() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        let req = RepositoryRequest::new("/CM/test.ozr");
+        let err = client.send(&req).await.unwrap_err();
+        assert!(matches!(err, OzError::NotAuthenticated));
+    }
+
     /// fetch_repository는 인증 전에 NotAuthenticated를 반환해야 함
     #[tokio::test]
     async fn test_fetch_repository_not_authenticated() {
@@ -402,6 +523,19 @@ mod tests {
             .fetch_data_module("test.odi", "/CM", &params)
             .await
             .unwrap_err();
+        assert!(matches!(err, OzError::NotAuthenticated));
+    }
+
+    /// send with DataModuleRequest는 인증 전에 NotAuthenticated를 반환해야 함
+    #[tokio::test]
+    async fn test_send_data_module_not_authenticated() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        let req = DataModuleRequest {
+            odi_name: "test.odi".to_string(),
+            category: "/CM".to_string(),
+            params: vec![("arg1".to_string(), "val".to_string())],
+        };
+        let err = client.send(&req).await.unwrap_err();
         assert!(matches!(err, OzError::NotAuthenticated));
     }
 }

@@ -5,15 +5,15 @@
 //! - 에러 전파 테스트
 //! - Feature flag 테스트
 
-use ozra::codec::{
-    build_data_module_request, build_login_request, build_repository_request, check_error,
-    check_error_result, class_names, parse_data_module, parse_header,
-};
 use ozra::constants::{
     CLIENT_VERSION, DATA_MODULE_PREFIX, INITIAL_SESSION_ID, MAGIC, REQUEST_FRAME_SIZE,
 };
 use ozra::error::OzError;
 use ozra::field::{read_field_value, read_row};
+use ozra::messages::{
+    build_data_module_request, build_login_request, build_repository_request, check_error,
+    check_error_result, class_names, parse_data_module, parse_header,
+};
 use ozra::types::{BasicField, FieldKind, FieldValue, SqlType};
 use ozra::wire::{BufReader, BufWriter};
 
@@ -103,15 +103,23 @@ fn roundtrip_repository_payload_verification() {
     let mut reader = BufReader::new(&buf);
     let _header = parse_header(&mut reader).unwrap();
 
-    // Repository payload: REPO_HEADER_MARKER + 0x00 + 0x0000 + path
+    // Repository payload
     let marker = reader.read_u32().unwrap();
     assert_eq!(marker, 0x100);
-    let zero32 = reader.read_u32().unwrap();
-    assert_eq!(zero32, 0);
-    let zero16 = reader.read_u16().unwrap();
-    assert_eq!(zero16, 0);
+    let bool_val = reader.read_bool().unwrap();
+    assert!(!bool_val);
+    let extra_info = reader.read_utf16be().unwrap();
+    assert_eq!(extra_info, "");
+    let item_count = reader.read_u32().unwrap();
+    assert_eq!(item_count, 1);
     let parsed_path = reader.read_utf16be().unwrap();
     assert_eq!(parsed_path, path);
+    let timestamp = reader.read_i64().unwrap();
+    assert_eq!(timestamp, 0);
+    let compressed = reader.read_bool().unwrap();
+    assert!(!compressed);
+    let refresh = reader.read_bool().unwrap();
+    assert!(!refresh);
 }
 
 #[test]
@@ -510,6 +518,7 @@ fn feature_client_module_exists() {
 #[ignore = "requires network access to SSU OZ server"]
 async fn live_fetch_syllabus() {
     use ozra::client::OzClient;
+    use ozra::messages::{DataModuleRequest, RepositoryRequest};
 
     let base_url = "https://office.ssu.ac.kr/oz70";
     let mut client = OzClient::new(base_url, "guest", "guest").unwrap();
@@ -517,21 +526,26 @@ async fn live_fetch_syllabus() {
     // Step 0: 세션 초기화
     client.init_session().await.expect("init_session failed");
 
-    // Step 1: 로그인
-    let login_header = client.login().await.expect("login failed");
+    // Step 1: 로그인 (LoginResponse 반환)
+    let login_resp = client.login().await.expect("login failed");
     assert!(
         client.is_authenticated(),
         "should be authenticated after login"
     );
-    println!("Session ID: {:?}", login_header.session_id());
+    println!("Session ID: {}", login_resp.session_id);
 
-    // Step 2: .ozr 다운로드
+    // Step 2: .ozr 다운로드 (send 제네릭 메서드 사용)
+    let repo_req = RepositoryRequest::new("/CM/zcm_get_abeek_plan_2018_new.ozr");
+    let repo_resp = client.send(&repo_req).await.expect("fetch .ozr failed");
+    assert!(!repo_resp.data.is_empty(), ".ozr data should not be empty");
+    println!(".ozr size: {} bytes", repo_resp.data.len());
+
+    // Step 2b: .ozr 다운로드 (편의 메서드)
     let ozr_data = client
         .fetch_repository("/CM/zcm_get_abeek_plan_2018_new.ozr")
         .await
-        .expect("fetch .ozr failed");
+        .expect("fetch .ozr via convenience method failed");
     assert!(!ozr_data.is_empty(), ".ozr data should not be empty");
-    println!(".ozr size: {} bytes", ozr_data.len());
 
     // Step 3: .odi 다운로드
     let odi_data = client
@@ -541,18 +555,19 @@ async fn live_fetch_syllabus() {
     assert!(!odi_data.is_empty(), ".odi data should not be empty");
     println!(".odi size: {} bytes", odi_data.len());
 
-    // Step 4: DataModule 조회 (강의계획서)
-    let params = vec![
-        ("arg1".to_string(), "2026".to_string()),
-        ("arg2".to_string(), "090".to_string()),
-        ("arg3".to_string(), "50345792".to_string()),
-        ("UNAME".to_string(), "OZASPN".to_string()),
-        ("P_RANDOM".to_string(), "*01882".to_string()),
-    ];
-    let response = client
-        .fetch_data_module("zcm_get_abeek_plan_2018_new.odi", "/CM", &params)
-        .await
-        .expect("fetch_data_module failed");
+    // Step 4: DataModule 조회 (send 제네릭 메서드 사용)
+    let dm_req = DataModuleRequest {
+        odi_name: "zcm_get_abeek_plan_2018_new.odi".to_string(),
+        category: "/CM".to_string(),
+        params: vec![
+            ("arg1".to_string(), "2026".to_string()),
+            ("arg2".to_string(), "090".to_string()),
+            ("arg3".to_string(), "50345792".to_string()),
+            ("UNAME".to_string(), "OZASPN".to_string()),
+            ("P_RANDOM".to_string(), "*01882".to_string()),
+        ],
+    };
+    let response = client.send(&dm_req).await.expect("send DataModule failed");
 
     // 응답 검증
     assert!(
@@ -573,6 +588,23 @@ async fn live_fetch_syllabus() {
         .iter()
         .any(|(name, _)| name == "ET_DEPLAN");
     assert!(has_deplan, "response should contain ET_DEPLAN dataset");
+
+    // Step 4b: DataModule 조회 (편의 메서드)
+    let params = vec![
+        ("arg1".to_string(), "2026".to_string()),
+        ("arg2".to_string(), "090".to_string()),
+        ("arg3".to_string(), "50345792".to_string()),
+        ("UNAME".to_string(), "OZASPN".to_string()),
+        ("P_RANDOM".to_string(), "*01882".to_string()),
+    ];
+    let response2 = client
+        .fetch_data_module("zcm_get_abeek_plan_2018_new.odi", "/CM", &params)
+        .await
+        .expect("fetch_data_module failed");
+    assert!(
+        !response2.datasets.is_empty(),
+        "convenience method should also return datasets"
+    );
 }
 
 #[cfg(not(feature = "client"))]

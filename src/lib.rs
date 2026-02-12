@@ -12,7 +12,8 @@
 //! - [`types`] — 공유 타입 정의 ([`SqlType`], [`FieldValue`], [`FieldKind`] 등)
 //! - [`wire`] — 저수준 바이너리 I/O ([`BufReader`](wire::BufReader), [`BufWriter`](wire::BufWriter))
 //! - [`field`] — SQL 타입별 필드 값 디코딩 ([`read_field_value`](field::read_field_value), [`read_row`](field::read_row))
-//! - [`codec`] — 프로토콜 코덱 (요청 빌더 + 응답 파서 + DataModule 파싱)
+//! - [`messages`] — 메시지 추상화 (trait 기반 요청/응답 + 빌더/파서)
+//! - [`codec`] — 호환성 래퍼 ([`messages`] 모듈로의 re-export)
 //! - [`client`] — HTTP 클라이언트 (세션 관리 + 통신 플로우) *(feature `"client"` 활성화 시)*
 //!
 //! ## 사용 예시
@@ -36,11 +37,15 @@ pub mod codec;
 pub mod constants;
 pub mod error;
 pub mod field;
+pub mod messages;
 pub mod types;
 pub mod wire;
 
 // NOTE: Selective re-export — only expose commonly used types
 pub use error::{OzError, Result};
+pub use messages::repository::{
+    RepositoryContentType, RepositoryItem, RepositoryRequestOptions, RepositoryStatus,
+};
 pub use types::{
     BasicField, DataModuleMeta, DataModuleResponse, DataSet, DataSetGroup, DataSetInfo, FieldKind,
     FieldValue, OzMessageHeader, RecordInfo, Row, SqlType,
