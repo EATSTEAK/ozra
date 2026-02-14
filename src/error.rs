@@ -103,9 +103,13 @@ pub enum OzError {
     #[error("failed to parse repository response: {detail}")]
     RepositoryParseError { detail: String },
 
-    /// Repository 압축 해제 실패
-    #[error("failed to decompress repository content")]
-    DecompressionError,
+    /// GZIP 압축 해제 실패
+    #[error("decompression failed: {detail}")]
+    DecompressionError { detail: String },
+
+    /// GZIP 압축 실패
+    #[error("compression failed: {detail}")]
+    CompressionError { detail: String },
 
     /// 필드 값과 SQL 타입이 일치하지 않음
     #[error("type mismatch: SqlType::{sql_type} expects {expected}, got {actual}")]
@@ -268,7 +272,17 @@ mod tests {
 
     #[test]
     fn test_decompression_error_display() {
-        let err = OzError::DecompressionError;
-        assert_eq!(err.to_string(), "failed to decompress repository content");
+        let err = OzError::DecompressionError {
+            detail: "corrupt data".to_string(),
+        };
+        assert_eq!(err.to_string(), "decompression failed: corrupt data");
+    }
+
+    #[test]
+    fn test_compression_error_display() {
+        let err = OzError::CompressionError {
+            detail: "block too large".to_string(),
+        };
+        assert_eq!(err.to_string(), "compression failed: block too large");
     }
 }

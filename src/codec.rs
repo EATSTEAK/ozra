@@ -24,4 +24,5 @@ pub use crate::messages::login::build_login_request;
 pub use crate::messages::repository::build_repository_request;
 
 // Re-export GZIP blocked compression/decompression
+#[cfg(feature = "gzip")]
 pub use crate::gzip::{decode_gzip_blocked, encode_gzip_blocked, is_gzip_blocked};

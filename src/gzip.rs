@@ -36,6 +36,11 @@ use crate::error::{OzError, Result};
 /// 프로토콜 문서에 따른 기본값은 4,096바이트입니다.
 pub const DEFAULT_BLOCK_SIZE: usize = 4096;
 
+/// 해제 후 최대 허용 크기 (ZIP 폭탄 방어)
+///
+/// 해제된 전체 데이터 크기가 이 상한을 초과하면 에러를 반환합니다.
+const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256MB
+
 /// GZIP 블록 스트림을 해제합니다.
 ///
 /// 각 블록은 `[4B 크기 헤더 (Big-Endian i32)]` + `[GZIP 압축 데이터]`로 구성됩니다.
@@ -53,6 +58,7 @@ pub const DEFAULT_BLOCK_SIZE: usize = 4096;
 ///
 /// - 블록 크기 헤더를 읽기에 충분한 데이터가 없을 때
 /// - GZIP 해제에 실패할 때
+/// - 해제된 전체 크기가 [`MAX_DECOMPRESSED_SIZE`] (256MB)를 초과할 때
 ///
 /// # 예시
 ///
@@ -93,7 +99,7 @@ pub fn decode_gzip_blocked(data: &[u8]) -> Result<Vec<u8>> {
 
         // 블록 데이터가 충분한지 확인
         if offset + block_size > data.len() {
-            return Err(OzError::RepositoryParseError {
+            return Err(OzError::DecompressionError {
                 detail: format!(
                     "GZIP block truncated: expected {} bytes at offset {}, but only {} remaining",
                     block_size,
@@ -109,9 +115,21 @@ pub fn decode_gzip_blocked(data: &[u8]) -> Result<Vec<u8>> {
         let mut decompressed = Vec::new();
         decoder
             .read_to_end(&mut decompressed)
-            .map_err(|e| OzError::RepositoryParseError {
+            .map_err(|e| OzError::DecompressionError {
                 detail: format!("GZIP decompression failed at offset {offset}: {e}"),
             })?;
+
+        // ZIP 폭탄 방어: 해제 총 크기 상한 검사
+        if result.len() + decompressed.len() > MAX_DECOMPRESSED_SIZE {
+            return Err(OzError::DecompressionError {
+                detail: format!(
+                    "decompressed size exceeds limit: {} + {} > {} bytes",
+                    result.len(),
+                    decompressed.len(),
+                    MAX_DECOMPRESSED_SIZE
+                ),
+            });
+        }
 
         result.extend_from_slice(&decompressed);
         offset += block_size;
@@ -151,7 +169,7 @@ pub fn encode_gzip_blocked(data: &[u8], block_size: usize) -> Result<Vec<u8>> {
         block_size
     };
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(data.len());
 
     // 빈 데이터: 종료 마커만 기록
     if data.is_empty() {
@@ -168,18 +186,20 @@ pub fn encode_gzip_blocked(data: &[u8], block_size: usize) -> Result<Vec<u8>> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder
             .write_all(chunk)
-            .map_err(|e| OzError::RepositoryParseError {
+            .map_err(|e| OzError::CompressionError {
                 detail: format!("GZIP compression failed: {e}"),
             })?;
-        let compressed = encoder
-            .finish()
-            .map_err(|e| OzError::RepositoryParseError {
-                detail: format!("GZIP compression finalize failed: {e}"),
-            })?;
+        let compressed = encoder.finish().map_err(|e| OzError::CompressionError {
+            detail: format!("GZIP compression finalize failed: {e}"),
+        })?;
+
+        // 압축된 블록 크기가 i32 범위를 초과하는지 검사
+        let block_len = i32::try_from(compressed.len()).map_err(|_| OzError::CompressionError {
+            detail: format!("compressed block too large: {} bytes", compressed.len()),
+        })?;
 
         // 4바이트 Big-Endian 크기 헤더 + 압축 데이터
-        let compressed_len = compressed.len() as i32;
-        result.extend_from_slice(&compressed_len.to_be_bytes());
+        result.extend_from_slice(&block_len.to_be_bytes());
         result.extend_from_slice(&compressed);
 
         offset = end;
@@ -195,6 +215,11 @@ pub fn encode_gzip_blocked(data: &[u8], block_size: usize) -> Result<Vec<u8>> {
 ///
 /// GZIP 블록 스트림은 4바이트 크기 헤더로 시작하고, 그 뒤에 GZIP 매직 바이트(`0x1f 0x8b`)가
 /// 위치합니다. 이 함수는 첫 번째 블록의 구조를 검사하여 판별합니다.
+///
+/// # 한계
+///
+/// 첫 6바이트 휴리스틱 기반 판별이므로, 비압축 바이너리가 동일 패턴
+/// (양수 Big-Endian i32 + `0x1f 0x8b`)을 만족할 경우 false-positive가 발생할 수 있습니다.
 ///
 /// # 참고
 ///
@@ -226,6 +251,42 @@ pub fn is_gzip_blocked(data: &[u8]) -> bool {
 
     // 블록 크기가 양수이고, 그 뒤에 GZIP 매직 바이트가 있는지 확인
     block_size > 0 && data[4] == 0x1f && data[5] == 0x8b
+}
+
+/// 바이트 슬라이스를 GZIP 해제합니다.
+///
+/// 데이터의 구조를 자동 감지하여 적절한 해제 방식을 선택합니다:
+/// - GZIP 블록 스트림이면 블록 단위로 해제
+/// - 단일 GZIP 스트림(`0x1f 0x8b`)이면 일반 GZIP 해제
+/// - 압축되지 않은 데이터이면 그대로 복사하여 반환
+///
+/// # 에러
+///
+/// GZIP 해제에 실패하면 [`OzError::DecompressionError`]를 반환합니다.
+pub fn decompress_bytes(content: &[u8]) -> Result<Vec<u8>> {
+    if content.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // GZIP 블록 스트림 감지 (4B 크기 헤더 + GZIP 매직)
+    if is_gzip_blocked(content) {
+        return decode_gzip_blocked(content);
+    }
+
+    // 단일 GZIP 스트림 감지 (매직 바이트 0x1f 0x8b)
+    if content.len() >= 2 && content[0] == 0x1f && content[1] == 0x8b {
+        let mut decoder = GzDecoder::new(content);
+        let mut decompressed = Vec::new();
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| OzError::DecompressionError {
+                detail: format!("GZIP decompression failed: {e}"),
+            })?;
+        return Ok(decompressed);
+    }
+
+    // 압축되지 않은 데이터 — 그대로 반환
+    Ok(content.to_vec())
 }
 
 #[cfg(test)]
@@ -452,5 +513,40 @@ mod tests {
     fn test_is_gzip_blocked_negative_size() {
         // 음수 크기
         assert!(!is_gzip_blocked(&[0xFF, 0xFF, 0xFF, 0xFF, 0x1f, 0x8b]));
+    }
+
+    // -- decompress_bytes 테스트 --
+
+    #[test]
+    fn test_decompress_bytes_empty() {
+        let result = decompress_bytes(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_decompress_bytes_uncompressed() {
+        let data = b"hello world";
+        let result = decompress_bytes(data).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_decompress_bytes_gzip_blocked() {
+        let original = b"test data for decompress_bytes";
+        let encoded = encode_gzip_blocked(original, 16).unwrap();
+        let result = decompress_bytes(&encoded).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_bytes_single_gzip() {
+        use flate2::write::GzEncoder;
+        let original = b"single gzip stream";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let result = decompress_bytes(&compressed).unwrap();
+        assert_eq!(result, original);
     }
 }
