@@ -1,4 +1,11 @@
-//! OZ 프로토콜에서 사용하는 매직 넘버, 프레임 크기, 마커 상수 등을 정의합니다.
+//! OZ 프로토콜에서 사용하는 매직 넘버, 프레임 크기 등 프로토콜 수준 상수를 정의합니다.
+//!
+//! 메시지별 마커(TYPE_MARKER, TRAILING_MARKER)는 각 요청 struct의
+//! trait associated constant로 정의되어 있습니다.
+//! - [`DataModuleRequest::TYPE_MARKER`](crate::messages::DataModuleRequest) — 0x17C (380)
+//! - [`CompactDataModuleRequest::TYPE_MARKER`](crate::messages::CompactDataModuleRequest) — 0x17E (382)
+//! - [`LoginRequest::TRAILING_MARKER`](crate::messages::LoginRequest) — 0xB0 (176)
+//! - [`RepositoryRequest::TYPE_MARKER`](crate::messages::RepositoryRequest) — 0x100 (256)
 
 /// OZ 프로토콜 매직 넘버 (0x00002711 = 10001)
 pub const MAGIC: u32 = 0x0000_2711;
@@ -26,18 +33,6 @@ pub const SUB_MAGIC: u32 = 0x0000_2710;
 
 /// 모든 요청의 고정 프레임 크기 (9,545 바이트)
 pub const REQUEST_FRAME_SIZE: usize = 9545;
-
-/// DataModule 타입 마커 (`Kn.OVe` = 380 = 0x17C)
-pub const DATA_MODULE_TYPE_MARKER: u32 = 0x0000_017C;
-
-/// CompactDataModule 타입 마커 (`Kn.C3L` = 382 = 0x17E)
-pub const COMPACT_DATA_MODULE_TYPE_MARKER: u32 = 0x0000_017E;
-
-/// UserLogin 트레일링 마커 (0xB0 = 176)
-pub const LOGIN_TRAILING_MARKER: u32 = 0x0000_00B0;
-
-/// Repository 헤더 마커 (0x100 = 256)
-pub const REPO_HEADER_MARKER: u32 = 0x0000_0100;
 
 /// 로그인 전 초기 세션 ID
 pub const INITIAL_SESSION_ID: &str = "-1905";
@@ -74,21 +69,6 @@ mod tests {
     #[test]
     fn test_request_frame_size() {
         assert_eq!(REQUEST_FRAME_SIZE, 9545);
-    }
-
-    #[test]
-    fn test_data_module_type_marker() {
-        assert_eq!(DATA_MODULE_TYPE_MARKER, 380);
-    }
-
-    #[test]
-    fn test_login_trailing_marker() {
-        assert_eq!(LOGIN_TRAILING_MARKER, 0xB0);
-    }
-
-    #[test]
-    fn test_repo_header_marker() {
-        assert_eq!(REPO_HEADER_MARKER, 0x100);
     }
 
     #[test]

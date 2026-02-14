@@ -118,9 +118,7 @@ impl OzRequestResponse for LoginRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{
-        CLIENT_VERSION, INITIAL_SESSION_ID, LOGIN_TRAILING_MARKER, MAGIC, REQUEST_FRAME_SIZE,
-    };
+    use crate::constants::{CLIENT_VERSION, INITIAL_SESSION_ID, MAGIC, REQUEST_FRAME_SIZE};
     use crate::messages::common::parse_header;
 
     /// 테스트 헬퍼: LoginRequest를 빌드합니다.
@@ -203,7 +201,7 @@ mod tests {
         assert_eq!(header.magic, MAGIC);
         assert_eq!(header.fields.len(), 16);
         let marker = reader.read_u32().unwrap();
-        assert_eq!(marker, LOGIN_TRAILING_MARKER);
+        assert_eq!(marker, LoginRequest::TRAILING_MARKER.unwrap());
     }
 
     #[test]

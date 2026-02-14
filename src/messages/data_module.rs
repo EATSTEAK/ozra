@@ -422,10 +422,7 @@ pub fn parse_data_module(buf: &[u8]) -> Result<DataModuleResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{
-        COMPACT_DATA_MODULE_TYPE_MARKER, DATA_MODULE_PREFIX, DATA_MODULE_TYPE_MARKER, MAGIC,
-        REQUEST_FRAME_SIZE, SUB_MAGIC,
-    };
+    use crate::constants::{DATA_MODULE_PREFIX, MAGIC, REQUEST_FRAME_SIZE, SUB_MAGIC};
     use crate::messages::common::parse_header;
     use crate::messages::traits::OzRequest;
     use crate::types::FieldValue;
@@ -496,7 +493,7 @@ mod tests {
 
         // DataModule payload
         let type_marker = reader.read_u32().unwrap();
-        assert_eq!(type_marker, DATA_MODULE_TYPE_MARKER);
+        assert_eq!(type_marker, DataModuleRequest::TYPE_MARKER.unwrap());
         let odi_name = reader.read_utf16be().unwrap();
         assert_eq!(odi_name, "report.odi");
         let sub_magic = reader.read_u32().unwrap();
@@ -1151,7 +1148,7 @@ mod tests {
 
         // Type marker = 382 (0x17E)
         let type_marker = reader.read_u32().unwrap();
-        assert_eq!(type_marker, COMPACT_DATA_MODULE_TYPE_MARKER);
+        assert_eq!(type_marker, CompactDataModuleRequest::TYPE_MARKER.unwrap());
 
         // odi_name
         let odi_name = reader.read_utf16be().unwrap();

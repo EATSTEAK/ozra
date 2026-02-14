@@ -524,7 +524,7 @@ impl OzRequestResponse for RepositoryRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{MAGIC, REPO_HEADER_MARKER, REQUEST_FRAME_SIZE};
+    use crate::constants::{MAGIC, REQUEST_FRAME_SIZE};
     use crate::messages::common::parse_header;
 
     /// 테스트 헬퍼: RepositoryRequest를 빌드합니다.
@@ -577,7 +577,7 @@ mod tests {
 
         // Repository payload
         let marker = reader.read_u32().unwrap();
-        assert_eq!(marker, REPO_HEADER_MARKER);
+        assert_eq!(marker, RepositoryRequest::TYPE_MARKER.unwrap());
         let _bool_false = reader.read_bool().unwrap();
         assert!(!_bool_false);
         let extra_info = reader.read_utf16be().unwrap();
