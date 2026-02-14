@@ -196,11 +196,22 @@ impl FieldValue {
 /// | `String(s)` | `string` |
 /// | `Int(i32)` | `number` |
 /// | `Long(i64)` | `number` |
-/// | `Float(f32)` | `number` |
-/// | `Double(f64)` | `number` |
+/// | `Float(f32)` | `number` 또는 `null` (NaN/Infinity) |
+/// | `Double(f64)` | `number` 또는 `null` (NaN/Infinity) |
 /// | `Bool(bool)` | `boolean` |
 /// | `DateTime(i64)` | `number` (epoch milliseconds) |
 /// | `Binary(Vec<u8>)` | `object` (`{"type":"binary","length":N}`) |
+///
+/// # Float/Double의 NaN 및 Infinity 처리
+///
+/// JSON 스펙(RFC 7159)에는 NaN, Infinity, -Infinity가 정의되어 있지 않습니다.
+/// `serde_json::json!()` 매크로는 내부적으로 `Number::from_f64()`를 호출하며,
+/// 이 함수는 NaN과 Infinity에 대해 `None`을 반환합니다.
+/// 그 결과 `json!()` 매크로가 해당 값을 `Value::Null`로 변환합니다.
+///
+/// 이 동작은 **의도된 것**이며, JSON 호환성을 보장하기 위한 것입니다.
+/// 만약 NaN/Infinity를 별도로 표현해야 한다면 문자열(`"NaN"`, `"Infinity"`)로
+/// 변환하는 커스텀 로직을 사용해야 합니다.
 ///
 /// # 예제
 ///
@@ -820,5 +831,37 @@ mod tests {
         let val = FieldValue::Int(99);
         let json = serde_json::Value::from(&val);
         assert_eq!(json, serde_json::json!(99));
+    }
+
+    // -- Float/Double NaN/Infinity → null 변환 테스트 --
+
+    #[test]
+    fn test_field_value_to_json_float_nan() {
+        let json: serde_json::Value = (&FieldValue::Float(f32::NAN)).into();
+        assert!(json.is_null(), "Float NaN should convert to JSON null");
+    }
+
+    #[test]
+    fn test_field_value_to_json_float_infinity() {
+        let json: serde_json::Value = (&FieldValue::Float(f32::INFINITY)).into();
+        assert!(json.is_null(), "Float Infinity should convert to JSON null");
+    }
+
+    #[test]
+    fn test_field_value_to_json_double_nan() {
+        let json: serde_json::Value = (&FieldValue::Double(f64::NAN)).into();
+        assert!(json.is_null(), "Double NaN should convert to JSON null");
+    }
+
+    #[test]
+    fn test_field_value_to_json_double_infinity() {
+        let json: serde_json::Value = (&FieldValue::Double(f64::INFINITY)).into();
+        assert!(json.is_null(), "Double Infinity should convert to JSON null");
+    }
+
+    #[test]
+    fn test_field_value_to_json_double_neg_infinity() {
+        let json: serde_json::Value = (&FieldValue::Double(f64::NEG_INFINITY)).into();
+        assert!(json.is_null(), "Double -Infinity should convert to JSON null");
     }
 }
