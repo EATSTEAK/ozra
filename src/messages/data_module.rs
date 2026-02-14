@@ -371,60 +371,6 @@ pub fn parse_data_module(buf: &[u8]) -> Result<DataModuleResponse> {
     DataModuleResponse::parse(buf)
 }
 
-/// DataModule 요청 바이너리를 빌드합니다.
-///
-/// [`DataModuleRequest`]의 편의 래퍼입니다.
-///
-/// # 예시
-///
-/// ```
-/// use ozra::messages::data_module::build_data_module_request;
-/// use ozra::constants::REQUEST_FRAME_SIZE;
-///
-/// let params = vec![("arg1".to_string(), "2026".to_string())];
-/// let buf = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
-/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-/// ```
-pub fn build_data_module_request(
-    odi_name: &str,
-    category: &str,
-    params: &[(String, String)],
-    session_id: &str,
-) -> Result<Vec<u8>> {
-    let req = DataModuleRequest {
-        odi_name: odi_name.to_string(),
-        category: category.to_string(),
-        params: params.to_vec(),
-    };
-    req.build(session_id)
-}
-
-/// CompactDataModule 요청 바이너리를 빌드합니다.
-///
-/// [`CompactDataModuleRequest`]의 편의 래퍼입니다.
-/// 파라미터가 필요 없는 경우 380 대신 382를 사용하면 페이로드가 더 작습니다.
-///
-/// # 예시
-///
-/// ```
-/// use ozra::messages::data_module::build_compact_data_module_request;
-/// use ozra::constants::REQUEST_FRAME_SIZE;
-///
-/// let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
-/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-/// ```
-pub fn build_compact_data_module_request(
-    odi_name: &str,
-    category: &str,
-    session_id: &str,
-) -> Result<Vec<u8>> {
-    let req = CompactDataModuleRequest {
-        odi_name: odi_name.to_string(),
-        category: category.to_string(),
-    };
-    req.build(session_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,7 +379,32 @@ mod tests {
         REQUEST_FRAME_SIZE, SUB_MAGIC,
     };
     use crate::messages::common::parse_header;
+    use crate::messages::traits::OzRequest;
     use crate::types::FieldValue;
+
+    /// 테스트 헬퍼: DataModuleRequest를 빌드합니다.
+    fn build_dm(
+        odi_name: &str,
+        category: &str,
+        params: &[(String, String)],
+        session_id: &str,
+    ) -> Vec<u8> {
+        let req = DataModuleRequest {
+            odi_name: odi_name.to_string(),
+            category: category.to_string(),
+            params: params.to_vec(),
+        };
+        req.build(session_id).unwrap()
+    }
+
+    /// 테스트 헬퍼: CompactDataModuleRequest를 빌드합니다.
+    fn build_compact_dm(odi_name: &str, category: &str, session_id: &str) -> Vec<u8> {
+        let req = CompactDataModuleRequest {
+            odi_name: odi_name.to_string(),
+            category: category.to_string(),
+        };
+        req.build(session_id).unwrap()
+    }
 
     #[test]
     fn test_data_module_request_class_name() {
@@ -451,14 +422,14 @@ mod tests {
     #[test]
     fn test_build_data_module_request_size() {
         let params = vec![("arg1".to_string(), "2026".to_string())];
-        let buf = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
+        let buf = build_dm("test.odi", "/CM", &params, "12345");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_build_data_module_request_class_name() {
         let params = vec![];
-        let buf = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
+        let buf = build_dm("test.odi", "/CM", &params, "12345");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let class_name = reader.read_utf16be().unwrap();
@@ -471,7 +442,7 @@ mod tests {
             ("arg1".to_string(), "2026".to_string()),
             ("arg2".to_string(), "090".to_string()),
         ];
-        let buf = build_data_module_request("report.odi", "/CM", &params, "sess1").unwrap();
+        let buf = build_dm("report.odi", "/CM", &params, "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 
@@ -512,7 +483,7 @@ mod tests {
     #[test]
     fn test_all_requests_exactly_9545_bytes() {
         let params = vec![("a".to_string(), "b".to_string())];
-        let dm = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
+        let dm = build_dm("test.odi", "/CM", &params, "12345");
         assert_eq!(dm.len(), 9545);
     }
 
@@ -522,7 +493,7 @@ mod tests {
             ("arg1".to_string(), "2026".to_string()),
             ("arg2".to_string(), "050".to_string()),
         ];
-        let buf = build_data_module_request("report.odi", "/CM", &params, "sess99").unwrap();
+        let buf = build_dm("report.odi", "/CM", &params, "sess99");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.class_name, DataModuleRequest::CLASS_NAME);
@@ -1110,13 +1081,13 @@ mod tests {
 
     #[test]
     fn test_build_compact_data_module_request_size() {
-        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        let buf = build_compact_dm("test.odi", "/CM", "12345");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_build_compact_data_module_request_class_name() {
-        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        let buf = build_compact_dm("test.odi", "/CM", "12345");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let class_name = reader.read_utf16be().unwrap();
@@ -1125,7 +1096,7 @@ mod tests {
 
     #[test]
     fn test_build_compact_data_module_request_payload() {
-        let buf = build_compact_data_module_request("report.odi", "/CM", "sess1").unwrap();
+        let buf = build_compact_dm("report.odi", "/CM", "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 
@@ -1162,8 +1133,8 @@ mod tests {
         // 382(compact)는 380(standard)보다 페이로드가 작아야 합니다.
         // 프레임 크기는 동일하지만, 의미 있는 바이트(non-zero)가 더 적습니다.
         let params = vec![("arg1".to_string(), "2026".to_string())];
-        let standard = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
-        let compact = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        let standard = build_dm("test.odi", "/CM", &params, "12345");
+        let compact = build_compact_dm("test.odi", "/CM", "12345");
 
         // 프레임 크기는 동일
         assert_eq!(standard.len(), compact.len());
@@ -1182,7 +1153,7 @@ mod tests {
 
     #[test]
     fn test_compact_roundtrip_header() {
-        let buf = build_compact_data_module_request("report.odi", "/CM", "sess42").unwrap();
+        let buf = build_compact_dm("report.odi", "/CM", "sess42");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.class_name, CompactDataModuleRequest::CLASS_NAME);

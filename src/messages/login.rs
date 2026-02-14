@@ -115,25 +115,6 @@ impl OzRequestResponse for LoginRequest {
     type Response = LoginResponse;
 }
 
-/// 호환성 함수: UserLogin 요청 바이너리를 빌드합니다.
-///
-/// [`LoginRequest`]의 편의 래퍼입니다.
-///
-/// # 예시
-///
-/// ```
-/// use ozra::messages::login::build_login_request;
-/// use ozra::constants::REQUEST_FRAME_SIZE;
-///
-/// let buf = build_login_request("guest", "guest").unwrap();
-/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-/// ```
-pub fn build_login_request(username: &str, password: &str) -> Result<Vec<u8>> {
-    use crate::constants::INITIAL_SESSION_ID;
-    let req = LoginRequest::new(username, password);
-    req.build(INITIAL_SESSION_ID)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +122,13 @@ mod tests {
         CLIENT_VERSION, INITIAL_SESSION_ID, LOGIN_TRAILING_MARKER, MAGIC, REQUEST_FRAME_SIZE,
     };
     use crate::messages::common::parse_header;
+
+    /// 테스트 헬퍼: LoginRequest를 빌드합니다.
+    fn build_login(username: &str, password: &str) -> Vec<u8> {
+        LoginRequest::new(username, password)
+            .build(INITIAL_SESSION_ID)
+            .unwrap()
+    }
 
     #[test]
     fn test_login_request_guest() {
@@ -171,20 +159,20 @@ mod tests {
 
     #[test]
     fn test_build_login_request_size() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_build_login_request_magic() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         let magic = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
         assert_eq!(magic, MAGIC);
     }
 
     #[test]
     fn test_build_login_request_class_name() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let class_name = reader.read_utf16be().unwrap();
@@ -193,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_build_login_request_fields() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let _class_name = reader.read_utf16be().unwrap();
@@ -209,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_build_login_request_trailing_marker() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.magic, MAGIC);
@@ -220,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_build_login_request_session_id() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.session_id(), Some(INITIAL_SESSION_ID));
@@ -228,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_build_login_request_custom_credentials() {
-        let buf = build_login_request("admin", "password123").unwrap();
+        let buf = build_login("admin", "password123");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.get_field("un"), Some("admin"));
@@ -237,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_login_request() {
-        let buf = build_login_request("guest", "guest").unwrap();
+        let buf = build_login("guest", "guest");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
 
         let mut reader = BufReader::new(&buf);

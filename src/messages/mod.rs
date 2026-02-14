@@ -52,31 +52,12 @@ pub use common::{
 
 // Message type re-exports
 pub use data_module::{
-    CompactDataModuleRequest, DataModuleRequest, build_compact_data_module_request,
-    build_data_module_request, parse_basic_field, parse_data_module, parse_dataset_group,
+    CompactDataModuleRequest, DataModuleRequest, parse_basic_field, parse_data_module,
+    parse_dataset_group,
 };
-pub use login::{LoginRequest, LoginResponse, build_login_request};
+pub use login::{LoginRequest, LoginResponse};
 pub use repository::{
     RepositoryContentType, RepositoryItem, RepositoryRequest, RepositoryRequestOptions,
-    RepositoryResponse, RepositoryStatus, build_repository_request,
+    RepositoryResponse, RepositoryStatus,
 };
-pub use transaction::{
-    TransactionDataSet, TransactionRequest, TransactionResponse, build_transaction_request,
-};
-
-/// 메시지 클래스명 상수
-///
-/// 각 메시지 타입의 associated const와 동일한 값을 제공합니다.
-/// 기존 코드와의 호환성을 위해 유지합니다.
-pub mod class_names {
-    use super::*;
-
-    /// UserLogin 요청 클래스명
-    pub const USER_LOGIN: &str = LoginRequest::CLASS_NAME;
-    /// Repository 요청 클래스명
-    pub const REPOSITORY_ITEM: &str = RepositoryRequest::CLASS_NAME;
-    /// DataModule 요청 클래스명
-    pub const DATA_MODULE: &str = DataModuleRequest::CLASS_NAME;
-    /// Transaction 요청 클래스명
-    pub const TRANSACTION: &str = TransactionRequest::CLASS_NAME;
-}
+pub use transaction::{TransactionDataSet, TransactionRequest, TransactionResponse};

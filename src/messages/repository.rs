@@ -521,29 +521,16 @@ impl OzRequestResponse for RepositoryRequest {
     type Response = RepositoryResponse;
 }
 
-/// 호환성 함수: Repository 요청 바이너리를 빌드합니다.
-///
-/// [`RepositoryRequest`]의 편의 래퍼입니다.
-///
-/// # 예시
-///
-/// ```
-/// use ozra::messages::repository::build_repository_request;
-/// use ozra::constants::REQUEST_FRAME_SIZE;
-///
-/// let buf = build_repository_request("/CM/test.ozr", "12345").unwrap();
-/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-/// ```
-pub fn build_repository_request(path: &str, session_id: &str) -> Result<Vec<u8>> {
-    let req = RepositoryRequest::new(path);
-    req.build(session_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constants::{MAGIC, REPO_HEADER_MARKER, REQUEST_FRAME_SIZE};
     use crate::messages::common::parse_header;
+
+    /// 테스트 헬퍼: RepositoryRequest를 빌드합니다.
+    fn build_repo(path: &str, session_id: &str) -> Vec<u8> {
+        RepositoryRequest::new(path).build(session_id).unwrap()
+    }
 
     // -- RepositoryRequest tests --
 
@@ -568,13 +555,13 @@ mod tests {
 
     #[test]
     fn test_build_repository_request_size() {
-        let buf = build_repository_request("/CM/test.ozr", "12345").unwrap();
+        let buf = build_repo("/CM/test.ozr", "12345");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_build_repository_request_class_name() {
-        let buf = build_repository_request("/CM/test.ozr", "12345").unwrap();
+        let buf = build_repo("/CM/test.ozr", "12345");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let class_name = reader.read_utf16be().unwrap();
@@ -583,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_build_repository_request_payload() {
-        let buf = build_repository_request("/CM/test.ozr", "session123").unwrap();
+        let buf = build_repo("/CM/test.ozr", "session123");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.get_field("s"), Some("session123"));
@@ -609,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_repository_request() {
-        let buf = build_repository_request("/CM/report.ozr", "sess42").unwrap();
+        let buf = build_repo("/CM/report.ozr", "sess42");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.class_name, RepositoryRequest::CLASS_NAME);

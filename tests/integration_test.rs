@@ -11,15 +11,42 @@ use ozra::constants::{
 use ozra::error::OzError;
 use ozra::field::{read_field_value, read_row};
 use ozra::messages::{
-    build_data_module_request, build_login_request, build_repository_request, check_error,
-    check_error_result, class_names, parse_data_module, parse_header,
+    DataModuleRequest, LoginRequest, OzRequest, RepositoryRequest, check_error, check_error_result,
+    parse_data_module, parse_header,
 };
 use ozra::types::{BasicField, FieldKind, FieldValue, SqlType};
 use ozra::wire::{BufReader, BufWriter};
 
+/// 테스트 헬퍼: LoginRequest를 빌드합니다.
+fn build_login_request(username: &str, password: &str) -> Vec<u8> {
+    LoginRequest::new(username, password)
+        .build(INITIAL_SESSION_ID)
+        .unwrap()
+}
+
+/// 테스트 헬퍼: RepositoryRequest를 빌드합니다.
+fn build_repository_request(path: &str, session_id: &str) -> Vec<u8> {
+    RepositoryRequest::new(path).build(session_id).unwrap()
+}
+
+/// 테스트 헬퍼: DataModuleRequest를 빌드합니다.
+fn build_data_module_request(
+    odi_name: &str,
+    category: &str,
+    params: &[(String, String)],
+    session_id: &str,
+) -> Vec<u8> {
+    let req = DataModuleRequest {
+        odi_name: odi_name.to_string(),
+        category: category.to_string(),
+        params: params.to_vec(),
+    };
+    req.build(session_id).unwrap()
+}
+
 #[test]
 fn roundtrip_login_request_header() {
-    let buf = build_login_request("guest", "guest").unwrap();
+    let buf = build_login_request("guest", "guest");
     assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
 
     let mut reader = BufReader::new(&buf);
@@ -28,7 +55,7 @@ fn roundtrip_login_request_header() {
     // 매직 넘버 검증
     assert_eq!(header.magic, MAGIC);
     // 클래스명 검증
-    assert_eq!(header.class_name, class_names::USER_LOGIN);
+    assert_eq!(header.class_name, LoginRequest::CLASS_NAME);
     // 16개 필드 검증
     assert_eq!(header.fields.len(), 16);
     // 주요 필드 값 검증
@@ -54,13 +81,13 @@ fn roundtrip_login_request_header() {
 #[test]
 fn roundtrip_repository_request_session_id() {
     let session = "test_session_42";
-    let buf = build_repository_request("/CM/report.ozr", session).unwrap();
+    let buf = build_repository_request("/CM/report.ozr", session);
     assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
 
     let mut reader = BufReader::new(&buf);
     let header = parse_header(&mut reader).unwrap();
 
-    assert_eq!(header.class_name, class_names::REPOSITORY_ITEM);
+    assert_eq!(header.class_name, RepositoryRequest::CLASS_NAME);
     assert_eq!(header.session_id(), Some(session));
     assert_eq!(header.fields.len(), 16);
 }
@@ -71,19 +98,19 @@ fn roundtrip_data_module_request_class_name_and_session() {
         ("arg1".to_string(), "2026".to_string()),
         ("arg2".to_string(), "090".to_string()),
     ];
-    let buf = build_data_module_request("report.odi", "/CM", &params, "sess99").unwrap();
+    let buf = build_data_module_request("report.odi", "/CM", &params, "sess99");
     assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
 
     let mut reader = BufReader::new(&buf);
     let header = parse_header(&mut reader).unwrap();
 
-    assert_eq!(header.class_name, class_names::DATA_MODULE);
+    assert_eq!(header.class_name, DataModuleRequest::CLASS_NAME);
     assert_eq!(header.session_id(), Some("sess99"));
 }
 
 #[test]
 fn roundtrip_login_then_parse_trailing_marker() {
-    let buf = build_login_request("admin", "password123").unwrap();
+    let buf = build_login_request("admin", "password123");
     let mut reader = BufReader::new(&buf);
     let header = parse_header(&mut reader).unwrap();
 
@@ -99,7 +126,7 @@ fn roundtrip_login_then_parse_trailing_marker() {
 #[test]
 fn roundtrip_repository_payload_verification() {
     let path = "/forcs/강의계획서.ozr";
-    let buf = build_repository_request(path, "sess_kr").unwrap();
+    let buf = build_repository_request(path, "sess_kr");
     let mut reader = BufReader::new(&buf);
     let _header = parse_header(&mut reader).unwrap();
 
@@ -125,7 +152,7 @@ fn roundtrip_repository_payload_verification() {
 #[test]
 fn roundtrip_data_module_payload_verification() {
     let params = vec![("key1".to_string(), "val1".to_string())];
-    let buf = build_data_module_request("test.odi", "/Test", &params, "s1").unwrap();
+    let buf = build_data_module_request("test.odi", "/Test", &params, "s1");
     let mut reader = BufReader::new(&buf);
     let _header = parse_header(&mut reader).unwrap();
 
@@ -480,7 +507,7 @@ fn error_check_error_result_returns_protocol_error() {
 
 #[test]
 fn error_check_error_ok_on_normal_response() {
-    let buf = build_login_request("guest", "guest").unwrap();
+    let buf = build_login_request("guest", "guest");
     assert!(check_error_result(&buf).is_ok());
 }
 
@@ -614,7 +641,7 @@ fn feature_client_module_disabled() {
     // client feature가 비활성화되면 client 모듈 없음을 컴파일 타임에 확인
     // 이 테스트는 `--no-default-features`로 실행 시에만 활성화됨
     // core 모듈은 feature 없이도 정상 동작해야 함
-    let buf = build_login_request("guest", "guest").unwrap();
+    let buf = build_login_request("guest", "guest");
     assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
 }
 
@@ -948,10 +975,10 @@ fn all_sql_types_field_read_roundtrip() {
 
 #[test]
 fn all_request_types_exactly_9545_bytes() {
-    let login = build_login_request("guest", "guest").unwrap();
+    let login = build_login_request("guest", "guest");
     assert_eq!(login.len(), 9545, "login request size mismatch");
 
-    let repo = build_repository_request("/a/b/c.ozr", "s1").unwrap();
+    let repo = build_repository_request("/a/b/c.ozr", "s1");
     assert_eq!(repo.len(), 9545, "repository request size mismatch");
 
     let params = vec![
@@ -959,19 +986,19 @@ fn all_request_types_exactly_9545_bytes() {
         ("b".to_string(), "2".to_string()),
         ("c".to_string(), "3".to_string()),
     ];
-    let dm = build_data_module_request("x.odi", "/Y", &params, "s2").unwrap();
+    let dm = build_data_module_request("x.odi", "/Y", &params, "s2");
     assert_eq!(dm.len(), 9545, "data module request size mismatch");
 }
 
 #[test]
 fn request_with_empty_params() {
     let params: Vec<(String, String)> = vec![];
-    let buf = build_data_module_request("empty.odi", "/", &params, "s0").unwrap();
+    let buf = build_data_module_request("empty.odi", "/", &params, "s0");
     assert_eq!(buf.len(), 9545);
 
     let mut reader = BufReader::new(&buf);
     let header = parse_header(&mut reader).unwrap();
-    assert_eq!(header.class_name, class_names::DATA_MODULE);
+    assert_eq!(header.class_name, DataModuleRequest::CLASS_NAME);
 }
 
 /// UTF-16BE 문자열을 raw Vec에 작성

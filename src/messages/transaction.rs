@@ -261,41 +261,28 @@ fn write_basic_field(writer: &mut BufWriter, field: &BasicField) -> Result<()> {
     Ok(())
 }
 
-/// Transaction 요청 바이너리를 빌드합니다.
-///
-/// [`TransactionRequest`]의 편의 래퍼입니다.
-///
-/// # 예시
-///
-/// ```
-/// use ozra::messages::transaction::build_transaction_request;
-/// use ozra::constants::REQUEST_FRAME_SIZE;
-///
-/// let params = vec![("key".to_string(), "value".to_string())];
-/// let buf = build_transaction_request("SAVE", "MODULE", &params, "12345").unwrap();
-/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-/// ```
-pub fn build_transaction_request(
-    transaction_name: &str,
-    module_name: &str,
-    params: &[(String, String)],
-    session_id: &str,
-) -> Result<Vec<u8>> {
-    let req = TransactionRequest {
-        transaction_name: transaction_name.to_string(),
-        module_name: module_name.to_string(),
-        params: params.to_vec(),
-        datasets: vec![],
-    };
-    req.build(session_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constants::{MAGIC, REQUEST_FRAME_SIZE};
     use crate::messages::common::parse_header;
     use crate::types::{FieldKind, FieldValue, SqlType};
+
+    /// 테스트 헬퍼: TransactionRequest를 빌드합니다.
+    fn build_tx(
+        transaction_name: &str,
+        module_name: &str,
+        params: &[(String, String)],
+        session_id: &str,
+    ) -> Vec<u8> {
+        let req = TransactionRequest {
+            transaction_name: transaction_name.to_string(),
+            module_name: module_name.to_string(),
+            params: params.to_vec(),
+            datasets: vec![],
+        };
+        req.build(session_id).unwrap()
+    }
 
     // ── 기본 구조체/Trait 테스트 ──────────────────────────────────────
 
@@ -332,13 +319,13 @@ mod tests {
     #[test]
     fn test_build_transaction_request_size() {
         let params = vec![("arg1".to_string(), "hello".to_string())];
-        let buf = build_transaction_request("SAVE_DATA", "MY_MODULE", &params, "12345").unwrap();
+        let buf = build_tx("SAVE_DATA", "MY_MODULE", &params, "12345");
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
     #[test]
     fn test_build_transaction_request_magic() {
-        let buf = build_transaction_request("TX", "MOD", &[], "sess1").unwrap();
+        let buf = build_tx("TX", "MOD", &[], "sess1");
         let mut reader = BufReader::new(&buf);
         let magic = reader.read_u32().unwrap();
         assert_eq!(magic, MAGIC);
@@ -346,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_build_transaction_request_class_name() {
-        let buf = build_transaction_request("TX", "MOD", &[], "sess1").unwrap();
+        let buf = build_tx("TX", "MOD", &[], "sess1");
         let mut reader = BufReader::new(&buf);
         let _magic = reader.read_u32().unwrap();
         let class_name = reader.read_utf16be().unwrap();
@@ -359,7 +346,7 @@ mod tests {
             ("arg1".to_string(), "hello".to_string()),
             ("arg2".to_string(), "world".to_string()),
         ];
-        let buf = build_transaction_request("SAVE_DATA", "MY_MODULE", &params, "sess1").unwrap();
+        let buf = build_tx("SAVE_DATA", "MY_MODULE", &params, "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 
@@ -398,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_build_transaction_request_no_params() {
-        let buf = build_transaction_request("TX", "MOD", &[], "sess1").unwrap();
+        let buf = build_tx("TX", "MOD", &[], "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 
@@ -414,7 +401,7 @@ mod tests {
     #[test]
     fn test_build_transaction_request_korean_names() {
         let params = vec![("키".to_string(), "값".to_string())];
-        let buf = build_transaction_request("저장_트랜잭션", "모듈명", &params, "sess1").unwrap();
+        let buf = build_tx("저장_트랜잭션", "모듈명", &params, "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 
@@ -435,7 +422,7 @@ mod tests {
     #[test]
     fn test_all_transaction_requests_exactly_9545_bytes() {
         let params = vec![("a".to_string(), "b".to_string())];
-        let buf = build_transaction_request("TX", "MOD", &params, "12345").unwrap();
+        let buf = build_tx("TX", "MOD", &params, "12345");
         assert_eq!(buf.len(), 9545);
     }
 
@@ -447,7 +434,7 @@ mod tests {
             ("order_id".to_string(), "12345".to_string()),
             ("status".to_string(), "CONFIRMED".to_string()),
         ];
-        let buf = build_transaction_request("SAVE_ORDER", "ORDER_MOD", &params, "sess99").unwrap();
+        let buf = build_tx("SAVE_ORDER", "ORDER_MOD", &params, "sess99");
         let mut reader = BufReader::new(&buf);
         let header = parse_header(&mut reader).unwrap();
         assert_eq!(header.class_name, TransactionRequest::CLASS_NAME);
@@ -845,7 +832,7 @@ mod tests {
             ("arg1".to_string(), "hello".to_string()),
             ("arg2".to_string(), "world".to_string()),
         ];
-        let buf = build_transaction_request("SAVE_DATA", "MY_MODULE", &params, "sess1").unwrap();
+        let buf = build_tx("SAVE_DATA", "MY_MODULE", &params, "sess1");
         let mut reader = BufReader::new(&buf);
         let _header = parse_header(&mut reader).unwrap();
 

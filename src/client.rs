@@ -538,8 +538,7 @@ mod tests {
     use super::*;
     use crate::constants::{INITIAL_SESSION_ID, REQUEST_FRAME_SIZE};
     use crate::messages::{
-        build_compact_data_module_request, build_data_module_request, build_login_request,
-        build_repository_request,
+        CompactDataModuleRequest, DataModuleRequest, LoginRequest, OzRequest, RepositoryRequest,
     };
 
     #[test]
@@ -588,24 +587,10 @@ mod tests {
     }
 
     #[test]
-    fn test_login_request_compat_builds_correctly() {
-        // 호환성 함수 검증
-        let buf = build_login_request("guest", "guest").unwrap();
-        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-    }
-
-    #[test]
     fn test_repository_request_builds_correctly() {
         // RepositoryRequest trait 기반 빌드 검증
         let req = RepositoryRequest::new("/CM/test.ozr");
         let buf = req.build("12345").unwrap();
-        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-    }
-
-    #[test]
-    fn test_repository_request_compat_builds_correctly() {
-        // 호환성 함수 검증
-        let buf = build_repository_request("/CM/test.ozr", "12345").unwrap();
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
@@ -622,17 +607,6 @@ mod tests {
             params,
         };
         let buf = req.build("12345").unwrap();
-        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-    }
-
-    #[test]
-    fn test_data_module_request_compat_builds_correctly() {
-        // 호환성 함수 검증
-        let params = vec![
-            ("arg1".to_string(), "2026".to_string()),
-            ("arg2".to_string(), "090".to_string()),
-        ];
-        let buf = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
@@ -702,12 +676,6 @@ mod tests {
             category: "/CM".to_string(),
         };
         let buf = req.build("12345").unwrap();
-        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
-    }
-
-    #[test]
-    fn test_compact_data_module_request_compat_builds_correctly() {
-        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
         assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
     }
 
