@@ -10,7 +10,6 @@
 //! cargo run --example fetch_abeek -- 2026 090 50124399
 //! ```
 
-use ozra::FieldValue;
 use ozra::client::OzClient;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -25,24 +24,6 @@ struct OutputData {
     message: String,
     /// 데이터셋 목록 (그룹명 -> 행 목록)
     datasets: HashMap<String, Vec<HashMap<String, serde_json::Value>>>,
-}
-
-/// FieldValue를 serde_json::Value로 변환
-fn field_value_to_json(value: &FieldValue) -> serde_json::Value {
-    match value {
-        FieldValue::Null => serde_json::Value::Null,
-        FieldValue::String(s) => serde_json::Value::String(s.clone()),
-        FieldValue::Int(v) => serde_json::json!(*v),
-        FieldValue::Long(v) => serde_json::json!(*v),
-        FieldValue::Float(v) => serde_json::json!(*v),
-        FieldValue::Double(v) => serde_json::json!(*v),
-        FieldValue::Bool(v) => serde_json::json!(*v),
-        FieldValue::DateTime(ms) => serde_json::json!(*ms),
-        FieldValue::Binary(b) => serde_json::json!({
-            "type": "binary",
-            "length": b.len()
-        }),
-    }
 }
 
 fn print_usage() {
@@ -163,7 +144,7 @@ async fn fetch_abeek_data(arg1: &str, arg2: &str, arg3: &str) -> OutputData {
         for row in rows {
             let mut json_row: HashMap<String, serde_json::Value> = HashMap::new();
             for (field_name, value) in row {
-                json_row.insert(field_name.clone(), field_value_to_json(value));
+                json_row.insert(field_name.clone(), serde_json::Value::from(value));
             }
             json_rows.push(json_row);
         }

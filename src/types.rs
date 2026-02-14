@@ -186,6 +186,54 @@ impl FieldValue {
     }
 }
 
+/// [`FieldValue`]를 [`serde_json::Value`]로 변환합니다.
+///
+/// 각 variant를 대응하는 JSON 타입으로 매핑합니다:
+///
+/// | FieldValue | JSON |
+/// |---|---|
+/// | `Null` | `null` |
+/// | `String(s)` | `string` |
+/// | `Int(i32)` | `number` |
+/// | `Long(i64)` | `number` |
+/// | `Float(f32)` | `number` |
+/// | `Double(f64)` | `number` |
+/// | `Bool(bool)` | `boolean` |
+/// | `DateTime(i64)` | `number` (epoch milliseconds) |
+/// | `Binary(Vec<u8>)` | `object` (`{"type":"binary","length":N}`) |
+///
+/// # 예제
+///
+/// ```
+/// use ozra::types::FieldValue;
+///
+/// let val = FieldValue::Int(42);
+/// let json: serde_json::Value = (&val).into();
+/// assert_eq!(json, serde_json::json!(42));
+///
+/// let null_val = FieldValue::Null;
+/// let json: serde_json::Value = (&null_val).into();
+/// assert!(json.is_null());
+/// ```
+impl From<&FieldValue> for serde_json::Value {
+    fn from(value: &FieldValue) -> Self {
+        match value {
+            FieldValue::Null => serde_json::Value::Null,
+            FieldValue::String(s) => serde_json::Value::String(s.clone()),
+            FieldValue::Int(v) => serde_json::json!(*v),
+            FieldValue::Long(v) => serde_json::json!(*v),
+            FieldValue::Float(v) => serde_json::json!(*v),
+            FieldValue::Double(v) => serde_json::json!(*v),
+            FieldValue::Bool(v) => serde_json::json!(*v),
+            FieldValue::DateTime(ms) => serde_json::json!(*ms),
+            FieldValue::Binary(b) => serde_json::json!({
+                "type": "binary",
+                "length": b.len()
+            }),
+        }
+    }
+}
+
 /// OZ 프로토콜 메시지 헤더
 ///
 /// OZ 프로토콜의 **요청과 응답 양쪽에서 사용되는 공통 헤더** 구조입니다.
@@ -688,5 +736,89 @@ mod tests {
         };
         assert!(response.groups.is_empty());
         assert!(response.datasets.is_empty());
+    }
+
+    // -- FieldValue → serde_json::Value 변환 테스트 --
+
+    #[test]
+    fn test_field_value_to_json_null() {
+        let json: serde_json::Value = (&FieldValue::Null).into();
+        assert!(json.is_null());
+    }
+
+    #[test]
+    fn test_field_value_to_json_string() {
+        let json: serde_json::Value = (&FieldValue::String("hello".to_string())).into();
+        assert_eq!(json, serde_json::Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_field_value_to_json_int() {
+        let json: serde_json::Value = (&FieldValue::Int(42)).into();
+        assert_eq!(json, serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_field_value_to_json_int_negative() {
+        let json: serde_json::Value = (&FieldValue::Int(-100)).into();
+        assert_eq!(json, serde_json::json!(-100));
+    }
+
+    #[test]
+    fn test_field_value_to_json_long() {
+        let json: serde_json::Value = (&FieldValue::Long(9_876_543_210)).into();
+        assert_eq!(json, serde_json::json!(9_876_543_210_i64));
+    }
+
+    #[test]
+    fn test_field_value_to_json_float() {
+        let json: serde_json::Value = (&FieldValue::Float(1.5_f32)).into();
+        let n = json.as_f64().unwrap();
+        assert!((n - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_field_value_to_json_double() {
+        let json: serde_json::Value = (&FieldValue::Double(std::f64::consts::PI)).into();
+        let n = json.as_f64().unwrap();
+        assert!((n - std::f64::consts::PI).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_field_value_to_json_bool_true() {
+        let json: serde_json::Value = (&FieldValue::Bool(true)).into();
+        assert_eq!(json, serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_field_value_to_json_bool_false() {
+        let json: serde_json::Value = (&FieldValue::Bool(false)).into();
+        assert_eq!(json, serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_field_value_to_json_datetime() {
+        let json: serde_json::Value = (&FieldValue::DateTime(1_700_000_000_000)).into();
+        assert_eq!(json, serde_json::json!(1_700_000_000_000_i64));
+    }
+
+    #[test]
+    fn test_field_value_to_json_binary() {
+        let json: serde_json::Value = (&FieldValue::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF])).into();
+        assert_eq!(json, serde_json::json!({"type": "binary", "length": 4}));
+    }
+
+    #[test]
+    fn test_field_value_to_json_binary_empty() {
+        let json: serde_json::Value = (&FieldValue::Binary(vec![])).into();
+        assert_eq!(json, serde_json::json!({"type": "binary", "length": 0}));
+    }
+
+    #[test]
+    fn test_field_value_to_json_from_syntax() {
+        // serde_json::Value::from(&val) 문법 테스트
+        let val = FieldValue::Int(99);
+        let json = serde_json::Value::from(&val);
+        assert_eq!(json, serde_json::json!(99));
     }
 }
