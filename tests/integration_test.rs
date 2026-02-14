@@ -156,7 +156,7 @@ fn roundtrip_data_module_payload_verification() {
     assert_eq!(reader.read_u32().unwrap(), 0x11);
 }
 
-/// 수동 바이너리 생성 → codec 파서 → 필드값 검증
+/// 수동 바이너리 생성 → messages 파서 → 필드값 검증
 #[test]
 fn data_module_single_group_varchar_integer() {
     let buf = build_test_dm_response_single_group();
