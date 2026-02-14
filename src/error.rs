@@ -123,6 +123,298 @@ pub enum OzError {
 /// [`OzError`]를 사용하는 편의 Result 타입 별칭
 pub type Result<T> = std::result::Result<T, OzError>;
 
+/// OZ Report 서버 프로토콜 에러 코드 상수
+///
+/// OZ 서버가 `OZCPExceptionMessage` 응답으로 반환하는 에러 코드를 정의합니다.
+/// 에러 코드는 **카테고리 기본값 + 서브코드** 구조입니다.
+///
+/// ```text
+/// 에러 코드 = 카테고리 기본값 + 서브코드
+/// 예: 10101001 = 10100000 (CYCLEPRINT) + 1001
+/// ```
+///
+/// # 카테고리
+///
+/// | 카테고리 | 기본값 | 설명 |
+/// |---|---|---|
+/// | CYCLEPRINT | 10100000 | 순환 인쇄 |
+/// | PRINTPREVIEW | 10200000 | 인쇄 미리보기 |
+/// | EXPORT | 10300000 | 내보내기 |
+/// | DIRECTPRINT | 10400000 | 직접 인쇄 |
+/// | SERVERPRINT | 10500000 | 서버 인쇄 |
+/// | EMAILSEND | 10600000 | 이메일 전송 |
+/// | FAXSEND | 10700000 | 팩스 전송 |
+/// | VIEWER | 10800000 | 뷰어 |
+/// | ARCHIVE | 10900000 | 아카이브 |
+/// | FORMDESIGNER | 11000000 | 폼 디자이너 |
+pub mod error_codes {
+    // ── 카테고리 기본값 ──────────────────────────────────────────────
+
+    /// CYCLEPRINT 카테고리 기본값 (순환 인쇄)
+    pub const CYCLEPRINT_BASE: u32 = 10_100_000;
+    /// PRINTPREVIEW 카테고리 기본값 (인쇄 미리보기)
+    pub const PRINTPREVIEW_BASE: u32 = 10_200_000;
+    /// EXPORT 카테고리 기본값 (내보내기)
+    pub const EXPORT_BASE: u32 = 10_300_000;
+    /// DIRECTPRINT 카테고리 기본값 (직접 인쇄)
+    pub const DIRECTPRINT_BASE: u32 = 10_400_000;
+    /// SERVERPRINT 카테고리 기본값 (서버 인쇄)
+    pub const SERVERPRINT_BASE: u32 = 10_500_000;
+    /// EMAILSEND 카테고리 기본값 (이메일 전송)
+    pub const EMAILSEND_BASE: u32 = 10_600_000;
+    /// FAXSEND 카테고리 기본값 (팩스 전송)
+    pub const FAXSEND_BASE: u32 = 10_700_000;
+    /// VIEWER 카테고리 기본값 (뷰어)
+    pub const VIEWER_BASE: u32 = 10_800_000;
+    /// ARCHIVE 카테고리 기본값 (아카이브)
+    pub const ARCHIVE_BASE: u32 = 10_900_000;
+    /// FORMDESIGNER 카테고리 기본값 (폼 디자이너)
+    pub const FORMDESIGNER_BASE: u32 = 11_000_000;
+
+    // ── CYCLEPRINT 서브코드 (10100000) ──────────────────────────────
+
+    /// CYCLEPRINT 서브그룹 1 기본값
+    pub const CYCLEPRINT_SUB1_BASE: u32 = 10_101_000;
+    /// CYCLEPRINT 에러 코드 1
+    pub const CYCLEPRINT_ERR_1: u32 = 10_101_001;
+    /// CYCLEPRINT 에러 코드 2
+    pub const CYCLEPRINT_ERR_2: u32 = 10_101_002;
+    /// CYCLEPRINT 에러 코드 3
+    pub const CYCLEPRINT_ERR_3: u32 = 10_101_003;
+    /// CYCLEPRINT 에러 코드 4
+    pub const CYCLEPRINT_ERR_4: u32 = 10_101_004;
+    /// CYCLEPRINT 서브그룹 2 기본값
+    pub const CYCLEPRINT_SUB2_BASE: u32 = 10_102_000;
+    /// CYCLEPRINT 에러 코드 5
+    pub const CYCLEPRINT_ERR_5: u32 = 10_102_001;
+    /// CYCLEPRINT 에러 코드 6
+    pub const CYCLEPRINT_ERR_6: u32 = 10_102_002;
+    /// CYCLEPRINT 에러 코드 7
+    pub const CYCLEPRINT_ERR_7: u32 = 10_102_003;
+    /// CYCLEPRINT 에러 코드 8
+    pub const CYCLEPRINT_ERR_8: u32 = 10_102_004;
+
+    // ── VIEWER 서브코드 (10800000) ──────────────────────────────────
+
+    /// VIEWER 서브그룹 기본값
+    pub const VIEWER_SUB_BASE: u32 = 10_801_000;
+    /// VIEWER 에러 코드 1
+    pub const VIEWER_ERR_1: u32 = 10_801_001;
+    /// VIEWER 에러 코드 2
+    pub const VIEWER_ERR_2: u32 = 10_801_002;
+
+    // ── 기타 특수 코드 ──────────────────────────────────────────────
+
+    /// 일반 에러 (비표준 범위, 0x600800)
+    pub const GENERAL_ERROR_1: u32 = 6_295_552;
+    /// 일반 에러 2 (비표준 범위, 0x601800)
+    pub const GENERAL_ERROR_2: u32 = 6_299_648;
+    /// 특수 에러 코드 기본값
+    pub const SPECIAL_BASE: u32 = 909_100;
+    /// 특수 에러 1
+    pub const SPECIAL_ERR_1: u32 = 909_101;
+    /// 특수 에러 2
+    pub const SPECIAL_ERR_2: u32 = 909_102;
+    /// 특수 에러 3
+    pub const SPECIAL_ERR_3: u32 = 909_103;
+}
+
+/// OZ 에러 코드의 카테고리 분류
+///
+/// 에러 코드를 범위별로 분류합니다. [`from_code`](ErrorCategory::from_code)로 에러 코드에서
+/// 카테고리를 얻을 수 있습니다.
+///
+/// # 예시
+///
+/// ```rust
+/// use ozra::error::ErrorCategory;
+///
+/// let cat = ErrorCategory::from_code(10101001);
+/// assert_eq!(cat, ErrorCategory::CyclePrint);
+/// assert_eq!(cat.description(), "순환 인쇄 관련");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorCategory {
+    /// 순환 인쇄 관련 에러 (10100000–10199999)
+    CyclePrint,
+    /// 인쇄 미리보기 관련 에러 (10200000–10299999)
+    PrintPreview,
+    /// 내보내기 관련 에러 (10300000–10399999)
+    Export,
+    /// 직접 인쇄 관련 에러 (10400000–10499999)
+    DirectPrint,
+    /// 서버 인쇄 관련 에러 (10500000–10599999)
+    ServerPrint,
+    /// 이메일 전송 관련 에러 (10600000–10699999)
+    EmailSend,
+    /// 팩스 전송 관련 에러 (10700000–10799999)
+    FaxSend,
+    /// 뷰어 관련 에러 (10800000–10899999)
+    Viewer,
+    /// 아카이브 관련 에러 (10900000–10999999)
+    Archive,
+    /// 폼 디자이너 관련 에러 (11000000–11099999)
+    FormDesigner,
+    /// 일반 에러 (비표준 범위)
+    General,
+    /// 특수 에러 (909100–909103)
+    Special,
+    /// 알 수 없는 카테고리
+    Unknown,
+}
+
+impl ErrorCategory {
+    /// 에러 코드에서 카테고리를 판별합니다.
+    ///
+    /// 에러 코드의 범위를 분석하여 해당하는 [`ErrorCategory`]를 반환합니다.
+    /// 알려진 범위에 속하지 않으면 [`ErrorCategory::Unknown`]을 반환합니다.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - 서버가 반환한 에러 코드 (i32, 음수일 수 있음)
+    ///
+    /// # 예시
+    ///
+    /// ```rust
+    /// use ozra::error::ErrorCategory;
+    ///
+    /// assert_eq!(ErrorCategory::from_code(10100000), ErrorCategory::CyclePrint);
+    /// assert_eq!(ErrorCategory::from_code(10801001), ErrorCategory::Viewer);
+    /// assert_eq!(ErrorCategory::from_code(909101), ErrorCategory::Special);
+    /// assert_eq!(ErrorCategory::from_code(-1), ErrorCategory::Unknown);
+    /// ```
+    pub fn from_code(code: i32) -> Self {
+        if code < 0 {
+            return Self::Unknown;
+        }
+        let code = code as u32;
+        match code {
+            // 특수 에러 범위
+            909_100..=909_103 => Self::Special,
+            // 일반 에러 (비표준 범위)
+            6_295_552 | 6_299_648 => Self::General,
+            // 카테고리별 범위 (100,000 단위)
+            10_100_000..=10_199_999 => Self::CyclePrint,
+            10_200_000..=10_299_999 => Self::PrintPreview,
+            10_300_000..=10_399_999 => Self::Export,
+            10_400_000..=10_499_999 => Self::DirectPrint,
+            10_500_000..=10_599_999 => Self::ServerPrint,
+            10_600_000..=10_699_999 => Self::EmailSend,
+            10_700_000..=10_799_999 => Self::FaxSend,
+            10_800_000..=10_899_999 => Self::Viewer,
+            10_900_000..=10_999_999 => Self::Archive,
+            11_000_000..=11_099_999 => Self::FormDesigner,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// 카테고리의 한국어 설명을 반환합니다.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::CyclePrint => "순환 인쇄 관련",
+            Self::PrintPreview => "인쇄 미리보기 관련",
+            Self::Export => "내보내기 관련",
+            Self::DirectPrint => "직접 인쇄 관련",
+            Self::ServerPrint => "서버 인쇄 관련",
+            Self::EmailSend => "이메일 전송 관련",
+            Self::FaxSend => "팩스 전송 관련",
+            Self::Viewer => "뷰어 관련",
+            Self::Archive => "아카이브 관련",
+            Self::FormDesigner => "폼 디자이너 관련",
+            Self::General => "일반 에러 (비표준)",
+            Self::Special => "특수 에러",
+            Self::Unknown => "알 수 없는 에러",
+        }
+    }
+
+    /// 카테고리의 기본값(base code)을 반환합니다.
+    ///
+    /// [`General`](ErrorCategory::General), [`Special`](ErrorCategory::Special),
+    /// [`Unknown`](ErrorCategory::Unknown)은 `None`을 반환합니다.
+    pub fn base_code(&self) -> Option<u32> {
+        match self {
+            Self::CyclePrint => Some(error_codes::CYCLEPRINT_BASE),
+            Self::PrintPreview => Some(error_codes::PRINTPREVIEW_BASE),
+            Self::Export => Some(error_codes::EXPORT_BASE),
+            Self::DirectPrint => Some(error_codes::DIRECTPRINT_BASE),
+            Self::ServerPrint => Some(error_codes::SERVERPRINT_BASE),
+            Self::EmailSend => Some(error_codes::EMAILSEND_BASE),
+            Self::FaxSend => Some(error_codes::FAXSEND_BASE),
+            Self::Viewer => Some(error_codes::VIEWER_BASE),
+            Self::Archive => Some(error_codes::ARCHIVE_BASE),
+            Self::FormDesigner => Some(error_codes::FORMDESIGNER_BASE),
+            Self::General | Self::Special | Self::Unknown => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl OzError {
+    /// `ProtocolError`의 에러 코드에서 [`ErrorCategory`]를 반환합니다.
+    ///
+    /// `ProtocolError` variant가 아닌 경우 `None`을 반환합니다.
+    ///
+    /// # 예시
+    ///
+    /// ```rust
+    /// use ozra::error::{OzError, ErrorCategory};
+    ///
+    /// let err = OzError::ProtocolError {
+    ///     code: 10801001,
+    ///     message: "viewer error".to_string(),
+    /// };
+    /// assert_eq!(err.error_category(), Some(ErrorCategory::Viewer));
+    ///
+    /// let err = OzError::NotAuthenticated;
+    /// assert_eq!(err.error_category(), None);
+    /// ```
+    pub fn error_category(&self) -> Option<ErrorCategory> {
+        match self {
+            Self::ProtocolError { code, .. } => Some(ErrorCategory::from_code(*code)),
+            _ => None,
+        }
+    }
+
+    /// `ProtocolError`의 에러 코드 값을 반환합니다.
+    ///
+    /// `ProtocolError` variant가 아닌 경우 `None`을 반환합니다.
+    pub fn error_code(&self) -> Option<i32> {
+        match self {
+            Self::ProtocolError { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+}
+
+/// 에러 코드에 대한 사람이 읽을 수 있는 요약 문자열을 생성합니다.
+///
+/// 에러 코드와 서버 메시지를 결합하여 카테고리 정보가 포함된 설명을 반환합니다.
+///
+/// # 예시
+///
+/// ```rust
+/// use ozra::error::format_error_detail;
+///
+/// let detail = format_error_detail(10801001, "file not found");
+/// assert!(detail.contains("뷰어"));
+/// assert!(detail.contains("10801001"));
+/// assert!(detail.contains("file not found"));
+/// ```
+pub fn format_error_detail(code: i32, message: &str) -> String {
+    let category = ErrorCategory::from_code(code);
+    format!(
+        "[{category}] 에러 코드 {code}: {message}",
+        category = category,
+        code = code,
+        message = message,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +576,322 @@ mod tests {
             detail: "block too large".to_string(),
         };
         assert_eq!(err.to_string(), "compression failed: block too large");
+    }
+
+    // ── 에러 코드 상수 값 검증 ──────────────────────────────────────
+
+    #[test]
+    fn test_error_code_category_base_values() {
+        assert_eq!(error_codes::CYCLEPRINT_BASE, 10_100_000);
+        assert_eq!(error_codes::PRINTPREVIEW_BASE, 10_200_000);
+        assert_eq!(error_codes::EXPORT_BASE, 10_300_000);
+        assert_eq!(error_codes::DIRECTPRINT_BASE, 10_400_000);
+        assert_eq!(error_codes::SERVERPRINT_BASE, 10_500_000);
+        assert_eq!(error_codes::EMAILSEND_BASE, 10_600_000);
+        assert_eq!(error_codes::FAXSEND_BASE, 10_700_000);
+        assert_eq!(error_codes::VIEWER_BASE, 10_800_000);
+        assert_eq!(error_codes::ARCHIVE_BASE, 10_900_000);
+        assert_eq!(error_codes::FORMDESIGNER_BASE, 11_000_000);
+    }
+
+    #[test]
+    fn test_error_code_cycleprint_subcodes() {
+        assert_eq!(error_codes::CYCLEPRINT_SUB1_BASE, 10_101_000);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_1, 10_101_001);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_2, 10_101_002);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_3, 10_101_003);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_4, 10_101_004);
+        assert_eq!(error_codes::CYCLEPRINT_SUB2_BASE, 10_102_000);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_5, 10_102_001);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_6, 10_102_002);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_7, 10_102_003);
+        assert_eq!(error_codes::CYCLEPRINT_ERR_8, 10_102_004);
+    }
+
+    #[test]
+    fn test_error_code_viewer_subcodes() {
+        assert_eq!(error_codes::VIEWER_SUB_BASE, 10_801_000);
+        assert_eq!(error_codes::VIEWER_ERR_1, 10_801_001);
+        assert_eq!(error_codes::VIEWER_ERR_2, 10_801_002);
+    }
+
+    #[test]
+    fn test_error_code_special_codes() {
+        assert_eq!(error_codes::GENERAL_ERROR_1, 6_295_552);
+        assert_eq!(error_codes::GENERAL_ERROR_2, 6_299_648);
+        assert_eq!(error_codes::SPECIAL_BASE, 909_100);
+        assert_eq!(error_codes::SPECIAL_ERR_1, 909_101);
+        assert_eq!(error_codes::SPECIAL_ERR_2, 909_102);
+        assert_eq!(error_codes::SPECIAL_ERR_3, 909_103);
+    }
+
+    #[test]
+    fn test_error_code_hex_values() {
+        // 일반 에러 코드의 16진수 값 검증
+        // 참고: 프로토콜 문서의 hex 표기(0x600800, 0x601800)는 근사값이며,
+        // JS 소스의 실제 10진수 값이 정확합니다.
+        assert_eq!(error_codes::GENERAL_ERROR_1, 6_295_552);
+        assert_eq!(error_codes::GENERAL_ERROR_2, 6_299_648);
+        // 두 코드의 차이는 4096 (0x1000)
+        assert_eq!(
+            error_codes::GENERAL_ERROR_2 - error_codes::GENERAL_ERROR_1,
+            4096
+        );
+    }
+
+    #[test]
+    fn test_error_code_subcode_offsets() {
+        // 서브코드 = 에러코드 - 카테고리 기본값
+        assert_eq!(
+            error_codes::CYCLEPRINT_ERR_1 - error_codes::CYCLEPRINT_BASE,
+            1001
+        );
+        assert_eq!(
+            error_codes::CYCLEPRINT_ERR_5 - error_codes::CYCLEPRINT_BASE,
+            2001
+        );
+        assert_eq!(error_codes::VIEWER_ERR_1 - error_codes::VIEWER_BASE, 1001);
+        assert_eq!(error_codes::VIEWER_ERR_2 - error_codes::VIEWER_BASE, 1002);
+    }
+
+    // ── ErrorCategory::from_code() 테스트 ───────────────────────────
+
+    #[test]
+    fn test_category_from_code_cycleprint() {
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::CYCLEPRINT_BASE as i32),
+            ErrorCategory::CyclePrint
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::CYCLEPRINT_ERR_1 as i32),
+            ErrorCategory::CyclePrint
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::CYCLEPRINT_ERR_8 as i32),
+            ErrorCategory::CyclePrint
+        );
+        // 범위 상한 경계
+        assert_eq!(
+            ErrorCategory::from_code(10_199_999),
+            ErrorCategory::CyclePrint
+        );
+    }
+
+    #[test]
+    fn test_category_from_code_all_bases() {
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::PRINTPREVIEW_BASE as i32),
+            ErrorCategory::PrintPreview
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::EXPORT_BASE as i32),
+            ErrorCategory::Export
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::DIRECTPRINT_BASE as i32),
+            ErrorCategory::DirectPrint
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::SERVERPRINT_BASE as i32),
+            ErrorCategory::ServerPrint
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::EMAILSEND_BASE as i32),
+            ErrorCategory::EmailSend
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::FAXSEND_BASE as i32),
+            ErrorCategory::FaxSend
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::VIEWER_BASE as i32),
+            ErrorCategory::Viewer
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::ARCHIVE_BASE as i32),
+            ErrorCategory::Archive
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::FORMDESIGNER_BASE as i32),
+            ErrorCategory::FormDesigner
+        );
+    }
+
+    #[test]
+    fn test_category_from_code_viewer() {
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::VIEWER_ERR_1 as i32),
+            ErrorCategory::Viewer
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::VIEWER_ERR_2 as i32),
+            ErrorCategory::Viewer
+        );
+    }
+
+    #[test]
+    fn test_category_from_code_special() {
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::SPECIAL_BASE as i32),
+            ErrorCategory::Special
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::SPECIAL_ERR_1 as i32),
+            ErrorCategory::Special
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::SPECIAL_ERR_3 as i32),
+            ErrorCategory::Special
+        );
+    }
+
+    #[test]
+    fn test_category_from_code_general() {
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::GENERAL_ERROR_1 as i32),
+            ErrorCategory::General
+        );
+        assert_eq!(
+            ErrorCategory::from_code(error_codes::GENERAL_ERROR_2 as i32),
+            ErrorCategory::General
+        );
+    }
+
+    #[test]
+    fn test_category_from_code_unknown() {
+        assert_eq!(ErrorCategory::from_code(0), ErrorCategory::Unknown);
+        assert_eq!(ErrorCategory::from_code(1), ErrorCategory::Unknown);
+        assert_eq!(ErrorCategory::from_code(999_999), ErrorCategory::Unknown);
+        assert_eq!(ErrorCategory::from_code(12_000_000), ErrorCategory::Unknown);
+    }
+
+    #[test]
+    fn test_category_from_code_negative() {
+        assert_eq!(ErrorCategory::from_code(-1), ErrorCategory::Unknown);
+        assert_eq!(ErrorCategory::from_code(-999), ErrorCategory::Unknown);
+        assert_eq!(ErrorCategory::from_code(i32::MIN), ErrorCategory::Unknown);
+    }
+
+    #[test]
+    fn test_category_description() {
+        assert_eq!(ErrorCategory::CyclePrint.description(), "순환 인쇄 관련");
+        assert_eq!(ErrorCategory::Viewer.description(), "뷰어 관련");
+        assert_eq!(ErrorCategory::Unknown.description(), "알 수 없는 에러");
+        assert_eq!(ErrorCategory::General.description(), "일반 에러 (비표준)");
+        assert_eq!(ErrorCategory::Special.description(), "특수 에러");
+    }
+
+    #[test]
+    fn test_category_display() {
+        assert_eq!(format!("{}", ErrorCategory::CyclePrint), "순환 인쇄 관련");
+        assert_eq!(format!("{}", ErrorCategory::Viewer), "뷰어 관련");
+    }
+
+    #[test]
+    fn test_category_base_code() {
+        assert_eq!(
+            ErrorCategory::CyclePrint.base_code(),
+            Some(error_codes::CYCLEPRINT_BASE)
+        );
+        assert_eq!(
+            ErrorCategory::Viewer.base_code(),
+            Some(error_codes::VIEWER_BASE)
+        );
+        assert_eq!(
+            ErrorCategory::FormDesigner.base_code(),
+            Some(error_codes::FORMDESIGNER_BASE)
+        );
+        assert_eq!(ErrorCategory::General.base_code(), None);
+        assert_eq!(ErrorCategory::Special.base_code(), None);
+        assert_eq!(ErrorCategory::Unknown.base_code(), None);
+    }
+
+    // ── OzError 통합 메서드 테스트 ──────────────────────────────────
+
+    #[test]
+    fn test_oz_error_error_category() {
+        let err = OzError::ProtocolError {
+            code: error_codes::VIEWER_ERR_1 as i32,
+            message: "viewer error".to_string(),
+        };
+        assert_eq!(err.error_category(), Some(ErrorCategory::Viewer));
+    }
+
+    #[test]
+    fn test_oz_error_error_category_none_for_non_protocol() {
+        assert_eq!(OzError::NotAuthenticated.error_category(), None);
+        assert_eq!(
+            OzError::DecompressionError {
+                detail: "test".into()
+            }
+            .error_category(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_oz_error_error_code() {
+        let err = OzError::ProtocolError {
+            code: 10_101_001,
+            message: "test".to_string(),
+        };
+        assert_eq!(err.error_code(), Some(10_101_001));
+    }
+
+    #[test]
+    fn test_oz_error_error_code_none_for_non_protocol() {
+        assert_eq!(OzError::NotAuthenticated.error_code(), None);
+    }
+
+    // ── format_error_detail 테스트 ──────────────────────────────────
+
+    #[test]
+    fn test_format_error_detail_viewer() {
+        let detail = format_error_detail(error_codes::VIEWER_ERR_1 as i32, "file not found");
+        assert!(detail.contains("뷰어"));
+        assert!(detail.contains("10801001"));
+        assert!(detail.contains("file not found"));
+    }
+
+    #[test]
+    fn test_format_error_detail_unknown() {
+        let detail = format_error_detail(-1, "access denied");
+        assert!(detail.contains("알 수 없는 에러"));
+        assert!(detail.contains("-1"));
+        assert!(detail.contains("access denied"));
+    }
+
+    #[test]
+    fn test_format_error_detail_cycleprint() {
+        let detail = format_error_detail(error_codes::CYCLEPRINT_ERR_1 as i32, "print failed");
+        assert!(detail.contains("순환 인쇄"));
+        assert!(detail.contains("10101001"));
+    }
+
+    // ── ErrorCategory의 derive 트레이트 검증 ─────────────────────────
+
+    #[test]
+    fn test_category_clone_and_copy() {
+        let cat = ErrorCategory::Viewer;
+        let cat2 = cat; // Copy
+        let cat3 = cat.clone(); // Clone
+        assert_eq!(cat, cat2);
+        assert_eq!(cat, cat3);
+    }
+
+    #[test]
+    fn test_category_debug() {
+        let debug_str = format!("{:?}", ErrorCategory::CyclePrint);
+        assert_eq!(debug_str, "CyclePrint");
+    }
+
+    #[test]
+    fn test_category_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ErrorCategory::Viewer);
+        set.insert(ErrorCategory::Viewer); // 중복
+        set.insert(ErrorCategory::CyclePrint);
+        assert_eq!(set.len(), 2);
     }
 }

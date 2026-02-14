@@ -45,7 +45,7 @@ pub mod types;
 pub mod wire;
 
 // NOTE: Selective re-export — only expose commonly used types
-pub use error::{OzError, Result};
+pub use error::{ErrorCategory, OzError, Result, error_codes, format_error_detail};
 pub use messages::repository::{
     RepositoryContentType, RepositoryItem, RepositoryRequestOptions, RepositoryStatus,
 };
