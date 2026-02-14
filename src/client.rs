@@ -38,7 +38,8 @@ use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
 use crate::error::{OzError, Result};
 use crate::messages::{
     DataModuleRequest, LoginRequest, LoginResponse, OzRequest, OzRequestResponse, OzResponse,
-    RepositoryRequest, TransactionRequest, TransactionResponse, check_error_result,
+    RepositoryRequest, TransactionDataSet, TransactionRequest, TransactionResponse,
+    check_error_result,
 };
 use crate::types::DataModuleResponse;
 
@@ -382,11 +383,14 @@ impl OzClient {
     /// 내부적으로 [`send`](Self::send)를 사용하여 [`TransactionRequest`]를 전송하고,
     /// [`TransactionResponse`]를 반환합니다.
     ///
+    /// 호출자가 소유권을 이전할 수 있으면 복사 0회, 그렇지 않으면
+    /// 호출자가 `.clone()`을 결정합니다.
+    ///
     /// # 인자
     ///
     /// - `transaction_name`: 트랜잭션 이름 (예: `"SAVE_ORDER"`)
     /// - `module_name`: 모듈 이름 (예: `"ORDER_MODULE"`)
-    /// - `params`: 트랜잭션 파라미터 (키-값 쌍)
+    /// - `params`: 트랜잭션 파라미터 (키-값 쌍, 소유권 이전)
     ///
     /// # 에러
     ///
@@ -396,13 +400,45 @@ impl OzClient {
         &self,
         transaction_name: &str,
         module_name: &str,
-        params: &[(String, String)],
+        params: Vec<(String, String)>,
     ) -> Result<TransactionResponse> {
         let req = TransactionRequest {
             transaction_name: transaction_name.to_string(),
             module_name: module_name.to_string(),
-            params: params.to_vec(),
+            params,
             datasets: vec![],
+        };
+        self.send(&req).await
+    }
+
+    /// 데이터셋을 포함하는 트랜잭션을 실행합니다.
+    ///
+    /// [`execute_transaction`](Self::execute_transaction)과 동일하지만,
+    /// [`TransactionDataSet`] 목록을 추가로 전송합니다.
+    ///
+    /// # 인자
+    ///
+    /// - `transaction_name`: 트랜잭션 이름 (예: `"SAVE_ORDER"`)
+    /// - `module_name`: 모듈 이름 (예: `"ORDER_MODULE"`)
+    /// - `params`: 트랜잭션 파라미터 (키-값 쌍, 소유권 이전)
+    /// - `datasets`: 전송할 데이터셋 목록
+    ///
+    /// # 에러
+    ///
+    /// - [`OzError::NotAuthenticated`] — 로그인되지 않은 상태
+    /// - `send`에서 발생 가능한 모든 에러
+    pub async fn execute_transaction_with_datasets(
+        &self,
+        transaction_name: &str,
+        module_name: &str,
+        params: Vec<(String, String)>,
+        datasets: Vec<TransactionDataSet>,
+    ) -> Result<TransactionResponse> {
+        let req = TransactionRequest {
+            transaction_name: transaction_name.to_string(),
+            module_name: module_name.to_string(),
+            params,
+            datasets,
         };
         self.send(&req).await
     }

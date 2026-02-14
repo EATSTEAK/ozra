@@ -26,11 +26,30 @@
 //! - 후행 상수 없음 (DataModule은 trailing constants 3개)
 //! - 데이터셋 직렬화 포함 (DataModule은 일반적으로 비어 있음)
 //!
+//! # ⚠️ INTEGER/SMALLINT 직렬화 그룹핑 불일치
+//!
+//! 현재 구현의 `write_field_value()` 그룹핑과 프로토콜 문서
+//! `08_transaction_dataset.md` §5.4 `R_.TlW`의 그룹핑이
+//! **INTEGER와 SMALLINT에 대해 반대**입니다:
+//!
+//! | 타입 | 현재 구현 (`write_field_value`) | 프로토콜 문서 (`R_.TlW`) |
+//! |------|-------------------------------|------------------------|
+//! | TinyInt + SmallInt | `i32` / null=`i32::MIN` | — |
+//! | Integer | `bool` + `i32` | `writeInt` / null=`0x80000000` |
+//! | Integer + TinyInt | — | `writeInt` / null=`0x80000000` |
+//! | SmallInt | — | `bool` + `writeInt` |
+//!
+//! 현재 구현은 `read_field_value()`와 **대칭적**이므로
+//! DataModule read↔write 호환이 보장됩니다.
+//! 서버 트래픽 검증 시 **가장 먼저 확인할 포인트**입니다.
+//!
 //! # 예시
 //!
-//! ```ignore
+//! ```
 //! use ozra::messages::{TransactionRequest, OzRequest};
+//! use ozra::constants::REQUEST_FRAME_SIZE;
 //!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // 파라미터만 포함하는 단순 트랜잭션
 //! let req = TransactionRequest {
 //!     transaction_name: "SAVE_DATA".to_string(),
@@ -42,6 +61,9 @@
 //!     datasets: vec![],
 //! };
 //! let buf = req.build("session123")?;
+//! assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+//! # Ok(())
+//! # }
 //! ```
 
 use crate::error::Result;
@@ -112,14 +134,17 @@ impl OzRequest for TransactionRequest {
         writer.write_utf16be(&self.module_name)?;
 
         // ③ 파라미터 수 + 키-값 쌍 (z6 인코딩)
-        writer.write_u32(self.params.len() as u32)?;
+        // NOTE: Java writeInt()는 signed 32-bit → write_i32가 의미적으로 정확.
+        //       빅엔디안 바이트 레이아웃은 u32/i32 동일하므로 프로토콜 호환성에 영향 없음.
+        //       write_dataset() 내부의 fieldCount, rowCount와 일관성 확보.
+        writer.write_i32(self.params.len() as i32)?;
         for (key, value) in &self.params {
             writer.write_utf16be(key)?;
             writer.write_utf16be(value)?;
         }
 
         // ④ 데이터셋 수 + 직렬화
-        writer.write_u32(self.datasets.len() as u32)?;
+        writer.write_i32(self.datasets.len() as i32)?;
         for dataset in &self.datasets {
             write_dataset(writer, dataset)?;
         }
@@ -145,6 +170,10 @@ pub struct TransactionResponse {
 }
 
 impl OzResponse for TransactionResponse {
+    // NOTE: `contains()` 기반 매칭이므로 "Transaction" 문자열을 포함하는
+    // 모든 클래스명(요청 클래스명 포함)에 매칭될 수 있음.
+    // 예: "FrameworkRequestTransaction"에도 매칭됨.
+    // TODO: 서버 응답의 실제 클래스명이 확인되면 더 구체적인 패턴으로 교체할 것.
     const CLASS_NAME: &'static str = "Transaction";
 
     fn parse_payload(reader: &mut BufReader, header: OzMessageHeader) -> Result<Self> {
@@ -346,8 +375,8 @@ mod tests {
         let module_name = reader.read_utf16be().unwrap();
         assert_eq!(module_name, "MY_MODULE");
 
-        // Param count
-        let param_count = reader.read_u32().unwrap();
+        // Param count (write_i32로 기록됨)
+        let param_count = reader.read_i32().unwrap();
         assert_eq!(param_count, 2);
 
         // Param 1
@@ -362,8 +391,8 @@ mod tests {
         assert_eq!(k2, "arg2");
         assert_eq!(v2, "world");
 
-        // Dataset count
-        let dataset_count = reader.read_u32().unwrap();
+        // Dataset count (write_i32로 기록됨)
+        let dataset_count = reader.read_i32().unwrap();
         assert_eq!(dataset_count, 0);
     }
 
@@ -376,9 +405,9 @@ mod tests {
         let _type_marker = reader.read_u32().unwrap();
         let _tx_name = reader.read_utf16be().unwrap();
         let _mod_name = reader.read_utf16be().unwrap();
-        let param_count = reader.read_u32().unwrap();
+        let param_count = reader.read_i32().unwrap();
         assert_eq!(param_count, 0);
-        let dataset_count = reader.read_u32().unwrap();
+        let dataset_count = reader.read_i32().unwrap();
         assert_eq!(dataset_count, 0);
     }
 
@@ -395,7 +424,7 @@ mod tests {
         let mod_name = reader.read_utf16be().unwrap();
         assert_eq!(mod_name, "모듈명");
 
-        let param_count = reader.read_u32().unwrap();
+        let param_count = reader.read_i32().unwrap();
         assert_eq!(param_count, 1);
         let k = reader.read_utf16be().unwrap();
         let v = reader.read_utf16be().unwrap();
@@ -483,14 +512,14 @@ mod tests {
         let mod_name = reader.read_utf16be().unwrap();
         assert_eq!(mod_name, "USER_MOD");
 
-        let param_count = reader.read_u32().unwrap();
+        let param_count = reader.read_i32().unwrap();
         assert_eq!(param_count, 1);
         let k = reader.read_utf16be().unwrap();
         let v = reader.read_utf16be().unwrap();
         assert_eq!(k, "table");
         assert_eq!(v, "USERS");
 
-        let dataset_count = reader.read_u32().unwrap();
+        let dataset_count = reader.read_i32().unwrap();
         assert_eq!(dataset_count, 1);
 
         // 데이터셋 봉투
@@ -568,8 +597,8 @@ mod tests {
         let _type_marker = reader.read_u32().unwrap();
         let _tx_name = reader.read_utf16be().unwrap();
         let _mod_name = reader.read_utf16be().unwrap();
-        let _param_count = reader.read_u32().unwrap();
-        let dataset_count = reader.read_u32().unwrap();
+        let _param_count = reader.read_i32().unwrap();
+        let dataset_count = reader.read_i32().unwrap();
         assert_eq!(dataset_count, 1);
 
         let ds_name = reader.read_utf16be().unwrap();
@@ -623,9 +652,9 @@ mod tests {
         let _type_marker = reader.read_u32().unwrap();
         let _tx_name = reader.read_utf16be().unwrap();
         let _mod_name = reader.read_utf16be().unwrap();
-        let _param_count = reader.read_u32().unwrap();
+        let _param_count = reader.read_i32().unwrap();
 
-        let dataset_count = reader.read_u32().unwrap();
+        let dataset_count = reader.read_i32().unwrap();
         assert_eq!(dataset_count, 2);
 
         // DS1
@@ -924,8 +953,8 @@ mod tests {
         let _type_marker = reader.read_u32().unwrap();
         let _tx_name = reader.read_utf16be().unwrap();
         let _mod_name = reader.read_utf16be().unwrap();
-        let _param_count = reader.read_u32().unwrap();
-        let _dataset_count = reader.read_u32().unwrap();
+        let _param_count = reader.read_i32().unwrap();
+        let _dataset_count = reader.read_i32().unwrap();
         let _ds_name = reader.read_utf16be().unwrap();
 
         let field_count = reader.read_i32().unwrap();
