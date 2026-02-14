@@ -10,7 +10,7 @@
 //! - **UTF-16BE** ([`BufReader::read_utf16be`]): `[4B charCount] + [N×2B UTF-16BE]`
 //!   길이 프리픽스가 **문자 수**임에 주의 (바이트 수 아님!)
 //! - **Java Modified UTF-8** ([`BufReader::read_utf`]): `[2B byteLength] + [NB UTF-8]`
-//!   null 문자가 `0xC0 0x80`으로 인코딩될 수 있음
+//!   null 문자가 `0xC0 0x80`으로, 보충 문자(U+10000 이상)가 surrogate pair로 인코딩됩니다.
 
 use crate::constants::REQUEST_FRAME_SIZE;
 use crate::error::{OzError, Result};
@@ -167,18 +167,10 @@ impl<'a> BufReader<'a> {
     /// 8바이트 Big Endian 부호 없는 정수를 읽습니다.
     ///
     /// 대용량 바이너리 크기 읽기 등에 사용됩니다.
+    /// `ensure()`로 길이를 보장하므로 `try_into().unwrap()`은 안전합니다.
     pub fn read_u64(&mut self) -> Result<u64> {
         self.ensure(8)?;
-        let v = u64::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-            self.buf[self.offset + 4],
-            self.buf[self.offset + 5],
-            self.buf[self.offset + 6],
-            self.buf[self.offset + 7],
-        ]);
+        let v = u64::from_be_bytes(self.buf[self.offset..self.offset + 8].try_into().unwrap());
         self.offset += 8;
         Ok(v)
     }
@@ -257,7 +249,8 @@ impl<'a> BufReader<'a> {
     ///
     /// 형식: `[2B byteLength] + [byteLength × 1B UTF-8]`
     ///
-    /// Java Modified UTF-8에서 null 문자(`\0`)는 `0xC0 0x80`으로 인코딩될 수 있습니다.
+    /// Java Modified UTF-8에서 null 문자(`\0`)는 `0xC0 0x80`으로,
+    /// 보충 문자(U+10000 이상)는 surrogate pair로 인코딩됩니다.
     pub fn read_utf(&mut self) -> Result<String> {
         let byte_len = self.read_u16()? as usize;
         let bytes = self.read_bytes(byte_len)?;
@@ -271,8 +264,17 @@ impl<'a> BufReader<'a> {
     /// 일반 [`read_utf()`](Self::read_utf)가 2바이트(u16) 길이 prefix를 사용하는 반면,
     /// 이 메서드는 **4바이트(i32) 길이 prefix**를 사용합니다. 65,535 바이트를 초과하는
     /// 긴 문자열을 처리할 때 사용됩니다.
+    ///
+    /// 음수 길이가 읽히면 [`OzError::ProtocolError`]를 반환합니다.
     pub fn read_oz_utf(&mut self) -> Result<String> {
-        let byte_len = self.read_i32()? as usize;
+        let raw_len = self.read_i32()?;
+        if raw_len < 0 {
+            return Err(OzError::ProtocolError {
+                code: 0,
+                message: format!("negative oz_utf length: {}", raw_len),
+            });
+        }
+        let byte_len = raw_len as usize;
         let bytes = self.read_bytes(byte_len)?;
         decode_modified_utf8(bytes)
     }
@@ -384,6 +386,42 @@ impl BufWriter {
         Ok(())
     }
 
+    /// 8바이트 Big Endian 부호 있는 정수를 씁니다.
+    pub fn write_i64(&mut self, v: i64) -> Result<()> {
+        self.ensure(8)?;
+        let bytes = v.to_be_bytes();
+        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
+        self.offset += 8;
+        Ok(())
+    }
+
+    /// 8바이트 Big Endian 부호 없는 정수를 씁니다.
+    pub fn write_u64(&mut self, v: u64) -> Result<()> {
+        self.ensure(8)?;
+        let bytes = v.to_be_bytes();
+        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
+        self.offset += 8;
+        Ok(())
+    }
+
+    /// 4바이트 Big Endian IEEE 754 단정밀도 부동소수점을 씁니다.
+    pub fn write_f32(&mut self, v: f32) -> Result<()> {
+        self.ensure(4)?;
+        let bytes = v.to_be_bytes();
+        self.buf[self.offset..self.offset + 4].copy_from_slice(&bytes);
+        self.offset += 4;
+        Ok(())
+    }
+
+    /// 8바이트 Big Endian IEEE 754 배정밀도 부동소수점을 씁니다.
+    pub fn write_f64(&mut self, v: f64) -> Result<()> {
+        self.ensure(8)?;
+        let bytes = v.to_be_bytes();
+        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
+        self.offset += 8;
+        Ok(())
+    }
+
     /// UTF-16BE 문자열을 씁니다.
     ///
     /// 형식: `[4B charCount] + [charCount × 2B UTF-16BE]`
@@ -416,23 +454,13 @@ impl BufWriter {
 
     /// Java Modified UTF-8 문자열을 씁니다.
     ///
-    /// 형식: `[2B byteLength] + [byteLength × 1B UTF-8]`
+    /// 형식: `[2B byteLength] + [byteLength × 1B Modified UTF-8]`
     ///
-    /// 현재 구현은 표준 UTF-8로 기록합니다. null 문자(`\0`)가 포함된 문자열의 경우
-    /// `0xC0 0x80`으로 인코딩합니다.
+    /// `cesu8::to_java_cesu8()`를 사용하여 null 문자(`\0`)를 `0xC0 0x80`으로,
+    /// 보충 문자(U+10000 이상)를 surrogate pair로 인코딩합니다.
     pub fn write_utf(&mut self, s: &str) -> Result<()> {
-        // NOTE: Encodes null chars as 0xC0 0x80 for Modified UTF-8
-        let mut utf8_bytes = Vec::with_capacity(s.len());
-        for byte in s.as_bytes() {
-            if *byte == 0x00 {
-                utf8_bytes.push(0xC0);
-                utf8_bytes.push(0x80);
-            } else {
-                utf8_bytes.push(*byte);
-            }
-        }
-
-        let byte_len = utf8_bytes.len();
+        let cesu8_bytes = cesu8::to_java_cesu8(s);
+        let byte_len = cesu8_bytes.len();
         let total_needed = 2 + byte_len;
         self.ensure(total_needed)?;
 
@@ -441,8 +469,8 @@ impl BufWriter {
         self.buf[self.offset..self.offset + 2].copy_from_slice(&len_bytes);
         self.offset += 2;
 
-        // UTF-8 바이트 기록
-        self.buf[self.offset..self.offset + byte_len].copy_from_slice(&utf8_bytes);
+        // Modified UTF-8 바이트 기록
+        self.buf[self.offset..self.offset + byte_len].copy_from_slice(&cesu8_bytes);
         self.offset += byte_len;
         Ok(())
     }
@@ -454,19 +482,12 @@ impl BufWriter {
     /// 일반 [`write_utf()`](Self::write_utf)가 2바이트(u16) 길이 prefix를 사용하는 반면,
     /// 이 메서드는 **4바이트(i32) 길이 prefix**를 사용합니다. 65,535 바이트를 초과하는
     /// 긴 문자열을 처리할 때 사용됩니다.
+    ///
+    /// `cesu8::to_java_cesu8()`를 사용하여 null 문자(`\0`)를 `0xC0 0x80`으로,
+    /// 보충 문자(U+10000 이상)를 surrogate pair로 인코딩합니다.
     pub fn write_oz_utf(&mut self, s: &str) -> Result<()> {
-        // NOTE: Encodes null chars as 0xC0 0x80 for Modified UTF-8
-        let mut utf8_bytes = Vec::with_capacity(s.len());
-        for byte in s.as_bytes() {
-            if *byte == 0x00 {
-                utf8_bytes.push(0xC0);
-                utf8_bytes.push(0x80);
-            } else {
-                utf8_bytes.push(*byte);
-            }
-        }
-
-        let byte_len = utf8_bytes.len();
+        let cesu8_bytes = cesu8::to_java_cesu8(s);
+        let byte_len = cesu8_bytes.len();
         let total_needed = 4 + byte_len;
         self.ensure(total_needed)?;
 
@@ -475,8 +496,8 @@ impl BufWriter {
         self.buf[self.offset..self.offset + 4].copy_from_slice(&len_bytes);
         self.offset += 4;
 
-        // UTF-8 바이트 기록
-        self.buf[self.offset..self.offset + byte_len].copy_from_slice(&utf8_bytes);
+        // Modified UTF-8 바이트 기록
+        self.buf[self.offset..self.offset + byte_len].copy_from_slice(&cesu8_bytes);
         self.offset += byte_len;
         Ok(())
     }
@@ -486,33 +507,6 @@ impl BufWriter {
         self.ensure(data.len())?;
         self.buf[self.offset..self.offset + data.len()].copy_from_slice(data);
         self.offset += data.len();
-        Ok(())
-    }
-
-    /// 8바이트 Big Endian 부호 있는 정수를 씁니다.
-    pub fn write_i64(&mut self, v: i64) -> Result<()> {
-        self.ensure(8)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
-        self.offset += 8;
-        Ok(())
-    }
-
-    /// 4바이트 Big Endian IEEE 754 단정밀도 부동소수점을 씁니다.
-    pub fn write_f32(&mut self, v: f32) -> Result<()> {
-        self.ensure(4)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 4].copy_from_slice(&bytes);
-        self.offset += 4;
-        Ok(())
-    }
-
-    /// 8바이트 Big Endian IEEE 754 배정밀도 부동소수점을 씁니다.
-    pub fn write_f64(&mut self, v: f64) -> Result<()> {
-        self.ensure(8)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
-        self.offset += 8;
         Ok(())
     }
 
@@ -537,6 +531,89 @@ impl Default for BufWriter {
 mod tests {
     use super::*;
 
+    // ── 테스트 매크로 ──
+
+    /// 기본 roundtrip 테스트: write -> read -> assert_eq
+    macro_rules! roundtrip_test {
+        ($name:ident, $write_fn:ident, $read_fn:ident, $value:expr) => {
+            #[test]
+            fn $name() {
+                let mut w = BufWriter::new();
+                w.$write_fn($value).unwrap();
+                let mut r = BufReader::new(w.as_bytes());
+                assert_eq!(r.$read_fn().unwrap(), $value);
+            }
+        };
+    }
+
+    /// 여러 값을 순차적으로 roundtrip 테스트
+    macro_rules! roundtrip_multi_test {
+        ($name:ident, $write_fn:ident, $read_fn:ident, $($value:expr),+ $(,)?) => {
+            #[test]
+            fn $name() {
+                let mut w = BufWriter::new();
+                $(w.$write_fn($value).unwrap();)+
+                let mut r = BufReader::new(w.as_bytes());
+                $(assert_eq!(r.$read_fn().unwrap(), $value);)+
+            }
+        };
+    }
+
+    /// 부동소수점 roundtrip 테스트: write -> read -> assert (v - expected).abs() < epsilon
+    macro_rules! roundtrip_float_test {
+        ($name:ident, $write_fn:ident, $read_fn:ident, $value:expr, $epsilon:expr) => {
+            #[test]
+            fn $name() {
+                let mut w = BufWriter::new();
+                w.$write_fn($value).unwrap();
+                let mut r = BufReader::new(w.as_bytes());
+                let v = r.$read_fn().unwrap();
+                assert!((v - $value).abs() < $epsilon);
+            }
+        };
+    }
+
+    /// 버퍼 오버플로우 테스트: 버퍼 끝 근처에서 쓰기 시도 -> BufferOverflow
+    macro_rules! overflow_test {
+        ($name:ident, $write_fn:ident, $remaining:expr, $value:expr, $needed:expr) => {
+            #[test]
+            fn $name() {
+                let mut w = BufWriter::new();
+                w.offset = REQUEST_FRAME_SIZE - $remaining;
+                let err = w.$write_fn($value).unwrap_err();
+                assert!(matches!(
+                    err,
+                    OzError::BufferOverflow {
+                        needed: $needed,
+                        ..
+                    }
+                ));
+            }
+        };
+    }
+
+    /// EOF 테스트: 불충분한 바이트에서 읽기 시도 -> UnexpectedEof
+    macro_rules! eof_test {
+        ($name:ident, $read_fn:ident, $available:expr, $needed:expr) => {
+            #[test]
+            fn $name() {
+                let data = [0u8; $available];
+                let mut r = BufReader::new(&data);
+                let err = r.$read_fn().unwrap_err();
+                assert!(matches!(
+                    err,
+                    OzError::UnexpectedEof {
+                        offset: 0,
+                        needed: $needed,
+                        available: $available
+                    }
+                ));
+            }
+        };
+    }
+
+    // ── 기본 read 테스트 ──
+
     #[test]
     fn read_u8_basic() {
         let data = [0x42];
@@ -552,7 +629,7 @@ mod tests {
         let mut r = BufReader::new(&data);
         assert!(r.read_bool().unwrap());
         assert!(!r.read_bool().unwrap());
-        assert!(r.read_bool().unwrap()); // 0xFF != 0 → true
+        assert!(r.read_bool().unwrap()); // 0xFF != 0 -> true
     }
 
     #[test]
@@ -623,11 +700,12 @@ mod tests {
         assert_eq!(r.remaining(), 2);
     }
 
+    // ── UTF-16BE read 테스트 ──
+
     #[test]
     fn read_utf16be_ascii() {
-        // "guest" → 5 chars
         let mut buf = Vec::new();
-        buf.extend_from_slice(&5u32.to_be_bytes()); // charCount = 5
+        buf.extend_from_slice(&5u32.to_be_bytes());
         for ch in "guest".encode_utf16() {
             buf.extend_from_slice(&ch.to_be_bytes());
         }
@@ -637,7 +715,6 @@ mod tests {
 
     #[test]
     fn read_utf16be_korean() {
-        // "강의계획서" → 5 chars
         let mut buf = Vec::new();
         let s = "강의계획서";
         let u16_units: Vec<u16> = s.encode_utf16().collect();
@@ -651,23 +728,24 @@ mod tests {
 
     #[test]
     fn read_utf16be_empty_string() {
-        let buf = 0u32.to_be_bytes(); // charCount = 0
+        let buf = 0u32.to_be_bytes();
         let mut r = BufReader::new(&buf);
         assert_eq!(r.read_utf16be().unwrap(), "");
     }
 
     #[test]
     fn utf16be_length_is_char_count_not_byte_count() {
-        // "AB" → charCount=2, byteLen=4
         let mut buf = Vec::new();
-        buf.extend_from_slice(&2u32.to_be_bytes()); // charCount = 2
-        buf.extend_from_slice(&0x0041u16.to_be_bytes()); // 'A'
-        buf.extend_from_slice(&0x0042u16.to_be_bytes()); // 'B'
+        buf.extend_from_slice(&2u32.to_be_bytes());
+        buf.extend_from_slice(&0x0041u16.to_be_bytes());
+        buf.extend_from_slice(&0x0042u16.to_be_bytes());
         let mut r = BufReader::new(&buf);
         let s = r.read_utf16be().unwrap();
         assert_eq!(s, "AB");
-        assert_eq!(r.offset(), 8); // 4 (charCount) + 4 (2 chars × 2B)
+        assert_eq!(r.offset(), 8);
     }
+
+    // ── Modified UTF-8 read 테스트 ──
 
     #[test]
     fn read_utf_basic() {
@@ -692,14 +770,13 @@ mod tests {
 
     #[test]
     fn read_utf_empty() {
-        let buf = [0x00, 0x00]; // byteLen = 0
+        let buf = [0x00, 0x00];
         let mut r = BufReader::new(&buf);
         assert_eq!(r.read_utf().unwrap(), "");
     }
 
     #[test]
     fn read_utf_null_char_modified_utf8() {
-        // Java Modified UTF-8: null 문자 → 0xC0 0x80
         let mut buf = Vec::new();
         let payload = [0x41, 0xC0, 0x80, 0x42]; // "A\0B"
         buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
@@ -710,58 +787,23 @@ mod tests {
         assert_eq!(result.len(), 3);
     }
 
-    #[test]
-    fn read_u8_eof() {
-        let data: [u8; 0] = [];
-        let mut r = BufReader::new(&data);
-        let err = r.read_u8().unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::UnexpectedEof {
-                offset: 0,
-                needed: 1,
-                available: 0
-            }
-        ));
-    }
+    // ── EOF 테스트 (매크로 사용) ──
 
-    #[test]
-    fn read_u32_insufficient_bytes() {
-        let data = [0x00, 0x01]; // 2 bytes, need 4
-        let mut r = BufReader::new(&data);
-        let err = r.read_u32().unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::UnexpectedEof {
-                offset: 0,
-                needed: 4,
-                available: 2
-            }
-        ));
-    }
+    eof_test!(read_u8_eof, read_u8, 0, 1);
+    eof_test!(read_i8_eof, read_i8, 0, 1);
+    eof_test!(read_u32_insufficient_bytes, read_u32, 2, 4);
+    eof_test!(read_i64_eof_after_partial, read_i64, 4, 8);
+    eof_test!(read_u64_eof, read_u64, 4, 8);
 
-    #[test]
-    fn read_i64_eof_after_partial() {
-        let data = [0x00; 4]; // 4 bytes, need 8
-        let mut r = BufReader::new(&data);
-        let err = r.read_i64().unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::UnexpectedEof {
-                offset: 0,
-                needed: 8,
-                available: 4
-            }
-        ));
-    }
+    // ── 오프셋 및 기타 리더 테스트 ──
 
     #[test]
     fn reader_offset_advances_correctly() {
         let mut buf = Vec::new();
-        buf.extend_from_slice(&0x12u8.to_be_bytes()); // 1B
-        buf.extend_from_slice(&0x1234u16.to_be_bytes()); // 2B
-        buf.extend_from_slice(&0x12345678u32.to_be_bytes()); // 4B
-        buf.extend_from_slice(&42i64.to_be_bytes()); // 8B
+        buf.extend_from_slice(&0x12u8.to_be_bytes());
+        buf.extend_from_slice(&0x1234u16.to_be_bytes());
+        buf.extend_from_slice(&0x12345678u32.to_be_bytes());
+        buf.extend_from_slice(&42i64.to_be_bytes());
 
         let mut r = BufReader::new(&buf);
         assert_eq!(r.offset(), 0);
@@ -790,6 +832,26 @@ mod tests {
         assert_eq!(r.remaining(), 2);
         assert_eq!(r.read_u8().unwrap(), 0x03);
     }
+
+    #[test]
+    fn set_offset_clamp_to_buf_len() {
+        let data = [0x01, 0x02, 0x03];
+        let mut r = BufReader::new(&data);
+        r.set_offset(100);
+        assert_eq!(r.offset(), 3);
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn read_bytes_zero_length() {
+        let data = [0x01, 0x02];
+        let mut r = BufReader::new(&data);
+        let slice = r.read_bytes(0).unwrap();
+        assert_eq!(slice.len(), 0);
+        assert_eq!(r.offset(), 0);
+    }
+
+    // ── 기본 write 테스트 ──
 
     #[test]
     fn write_u8_basic() {
@@ -836,24 +898,23 @@ mod tests {
         assert_eq!(&w.as_bytes()[..4], &[0x00, 0x00, 0x27, 0x11]);
     }
 
+    // ── UTF-16BE write 테스트 ──
+
     #[test]
     fn write_utf16be_ascii() {
         let mut w = BufWriter::new();
         w.write_utf16be("guest").unwrap();
-        // charCount = 5
         assert_eq!(&w.as_bytes()[..4], &5u32.to_be_bytes());
-        // 'g' = 0x0067
         assert_eq!(&w.as_bytes()[4..6], &[0x00, 0x67]);
-        assert_eq!(w.offset(), 4 + 5 * 2); // 14
+        assert_eq!(w.offset(), 4 + 5 * 2);
     }
 
     #[test]
     fn write_utf16be_korean() {
         let mut w = BufWriter::new();
         w.write_utf16be("강의계획서").unwrap();
-        // charCount = 5
         assert_eq!(&w.as_bytes()[..4], &5u32.to_be_bytes());
-        assert_eq!(w.offset(), 4 + 5 * 2); // 14
+        assert_eq!(w.offset(), 4 + 5 * 2);
     }
 
     #[test]
@@ -863,6 +924,8 @@ mod tests {
         assert_eq!(&w.as_bytes()[..4], &0u32.to_be_bytes());
         assert_eq!(w.offset(), 4);
     }
+
+    // ── Modified UTF-8 write 테스트 ──
 
     #[test]
     fn write_utf_basic() {
@@ -885,35 +948,38 @@ mod tests {
     fn write_utf_null_char_modified_utf8() {
         let mut w = BufWriter::new();
         w.write_utf("A\0B").unwrap();
-        // "A\0B" → 0x41, 0xC0, 0x80, 0x42 (4 bytes in Modified UTF-8)
-        assert_eq!(&w.as_bytes()[..2], &4u16.to_be_bytes()); // byteLen = 4
+        // "A\0B" -> 0x41, 0xC0, 0x80, 0x42 (4 bytes in Modified UTF-8)
+        assert_eq!(&w.as_bytes()[..2], &4u16.to_be_bytes());
         assert_eq!(&w.as_bytes()[2..6], &[0x41, 0xC0, 0x80, 0x42]);
         assert_eq!(w.offset(), 6);
     }
 
+    // ── write_bytes 테스트 ──
+
     #[test]
-    fn writer_overflow_u8() {
+    fn write_bytes_basic() {
         let mut w = BufWriter::new();
-        // 오프셋을 끝까지 이동
-        w.offset = REQUEST_FRAME_SIZE;
-        let err = w.write_u8(0x00).unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::BufferOverflow {
-                offset,
-                needed: 1,
-                limit,
-            } if offset == REQUEST_FRAME_SIZE && limit == REQUEST_FRAME_SIZE
-        ));
+        w.write_bytes(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        assert_eq!(&w.as_bytes()[..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(w.offset(), 4);
     }
 
     #[test]
-    fn writer_overflow_u32() {
+    fn write_bytes_empty() {
         let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 2; // 2 bytes left, need 4
-        let err = w.write_u32(0).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { needed: 4, .. }));
+        w.write_bytes(&[]).unwrap();
+        assert_eq!(w.offset(), 0);
     }
+
+    // ── 오버플로우 테스트 (매크로 사용) ──
+
+    overflow_test!(writer_overflow_u8, write_u8, 0, 0x00, 1);
+    overflow_test!(writer_overflow_u32, write_u32, 2, 0u32, 4);
+    overflow_test!(writer_overflow_i8, write_i8, 0, 0i8, 1);
+    overflow_test!(writer_overflow_i64, write_i64, 4, 0i64, 8);
+    overflow_test!(writer_overflow_u64, write_u64, 4, 0u64, 8);
+    overflow_test!(writer_overflow_f32, write_f32, 2, 0.0f32, 4);
+    overflow_test!(writer_overflow_f64, write_f64, 4, 0.0f64, 8);
 
     #[test]
     fn writer_overflow_utf16be() {
@@ -930,6 +996,16 @@ mod tests {
         let err = w.write_utf("hello").unwrap_err();
         assert!(matches!(err, OzError::BufferOverflow { .. }));
     }
+
+    #[test]
+    fn writer_overflow_bytes() {
+        let mut w = BufWriter::new();
+        w.offset = REQUEST_FRAME_SIZE - 2;
+        let err = w.write_bytes(&[0x00; 5]).unwrap_err();
+        assert!(matches!(err, OzError::BufferOverflow { .. }));
+    }
+
+    // ── 버퍼 유틸리티 테스트 ──
 
     #[test]
     fn writer_into_bytes_returns_full_buffer() {
@@ -952,55 +1028,37 @@ mod tests {
         assert_eq!(w.offset(), 0);
     }
 
-    #[test]
-    fn roundtrip_u8() {
-        let mut w = BufWriter::new();
-        w.write_u8(0xAB).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_u8().unwrap(), 0xAB);
-    }
+    // ── roundtrip 테스트 (매크로 사용) ──
 
-    #[test]
-    fn roundtrip_bool() {
-        let mut w = BufWriter::new();
-        w.write_bool(true).unwrap();
-        w.write_bool(false).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert!(r.read_bool().unwrap());
-        assert!(!r.read_bool().unwrap());
-    }
+    roundtrip_test!(roundtrip_u8, write_u8, read_u8, 0xAB);
+    roundtrip_test!(roundtrip_i16, write_i16, read_i16, -12345i16);
+    roundtrip_test!(roundtrip_u16, write_u16, read_u16, 54321u16);
+    roundtrip_test!(roundtrip_i32, write_i32, read_i32, -123456789i32);
+    roundtrip_test!(roundtrip_u32, write_u32, read_u32, 0xDEADBEEFu32);
+    roundtrip_test!(roundtrip_i64, write_i64, read_i64, -9876543210i64);
+    roundtrip_test!(roundtrip_u64, write_u64, read_u64, 12345678901234u64);
+    roundtrip_test!(roundtrip_u64_max, write_u64, read_u64, u64::MAX);
+    roundtrip_test!(roundtrip_u64_zero, write_u64, read_u64, 0u64);
 
-    #[test]
-    fn roundtrip_i16() {
-        let mut w = BufWriter::new();
-        w.write_i16(-12345).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_i16().unwrap(), -12345);
-    }
+    roundtrip_multi_test!(roundtrip_bool, write_bool, read_bool, true, false);
+    roundtrip_multi_test!(roundtrip_i8, write_i8, read_i8, -128i8, 0i8, 127i8);
 
-    #[test]
-    fn roundtrip_u16() {
-        let mut w = BufWriter::new();
-        w.write_u16(54321).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_u16().unwrap(), 54321);
-    }
+    roundtrip_float_test!(
+        roundtrip_f32,
+        write_f32,
+        read_f32,
+        std::f32::consts::PI,
+        f32::EPSILON
+    );
+    roundtrip_float_test!(
+        roundtrip_f64,
+        write_f64,
+        read_f64,
+        std::f64::consts::E,
+        f64::EPSILON
+    );
 
-    #[test]
-    fn roundtrip_i32() {
-        let mut w = BufWriter::new();
-        w.write_i32(-123456789).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_i32().unwrap(), -123456789);
-    }
-
-    #[test]
-    fn roundtrip_u32() {
-        let mut w = BufWriter::new();
-        w.write_u32(0xDEADBEEF).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_u32().unwrap(), 0xDEADBEEF);
-    }
+    // ── 문자열 roundtrip 테스트 ──
 
     #[test]
     fn roundtrip_utf16be_ascii() {
@@ -1059,6 +1117,17 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_utf_supplementary_char() {
+        // 보충 문자 (U+10000 이상) roundtrip 테스트
+        let mut w = BufWriter::new();
+        w.write_utf("Hello 🌍🎉").unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_utf().unwrap(), "Hello 🌍🎉");
+    }
+
+    // ── decode_modified_utf8 테스트 ──
+
+    #[test]
     fn decode_modified_utf8_standard() {
         let bytes = b"hello";
         assert_eq!(decode_modified_utf8(bytes).unwrap(), "hello");
@@ -1066,7 +1135,6 @@ mod tests {
 
     #[test]
     fn decode_modified_utf8_null_conversion() {
-        // 0xC0 0x80 → 0x00
         let bytes = [0x41, 0xC0, 0x80, 0x42]; // "A\0B"
         let result = decode_modified_utf8(&bytes).unwrap();
         assert_eq!(result, "A\0B");
@@ -1075,7 +1143,6 @@ mod tests {
 
     #[test]
     fn decode_modified_utf8_multiple_nulls() {
-        // 여러 null 문자: "\0\0"
         let bytes = [0xC0, 0x80, 0xC0, 0x80];
         let result = decode_modified_utf8(&bytes).unwrap();
         assert_eq!(result, "\0\0");
@@ -1101,238 +1168,7 @@ mod tests {
         assert_eq!(result, "");
     }
 
-    #[test]
-    fn roundtrip_multiple_types_sequential() {
-        let mut w = BufWriter::new();
-        w.write_u32(crate::constants::MAGIC).unwrap();
-        w.write_utf16be("TestClass").unwrap();
-        w.write_u32(2).unwrap(); // field count
-        w.write_utf16be("key1").unwrap();
-        w.write_utf16be("value1").unwrap();
-        w.write_utf16be("key2").unwrap();
-        w.write_utf16be("value2").unwrap();
-        w.write_bool(true).unwrap();
-        w.write_i32(-42).unwrap();
-
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_u32().unwrap(), crate::constants::MAGIC);
-        assert_eq!(r.read_utf16be().unwrap(), "TestClass");
-        assert_eq!(r.read_u32().unwrap(), 2);
-        assert_eq!(r.read_utf16be().unwrap(), "key1");
-        assert_eq!(r.read_utf16be().unwrap(), "value1");
-        assert_eq!(r.read_utf16be().unwrap(), "key2");
-        assert_eq!(r.read_utf16be().unwrap(), "value2");
-        assert!(r.read_bool().unwrap());
-        assert_eq!(r.read_i32().unwrap(), -42);
-    }
-
-    #[test]
-    fn read_utf16be_surrogate_pair() {
-        // 🌍 (U+1F30D) → UTF-16 서로게이트 페어: D83C DF0D (2 code units)
-        let mut buf = Vec::new();
-        let s = "🌍";
-        let u16_units: Vec<u16> = s.encode_utf16().collect();
-        assert_eq!(u16_units.len(), 2); // 서로게이트 페어
-        buf.extend_from_slice(&(u16_units.len() as u32).to_be_bytes());
-        for ch in &u16_units {
-            buf.extend_from_slice(&ch.to_be_bytes());
-        }
-        let mut r = BufReader::new(&buf);
-        assert_eq!(r.read_utf16be().unwrap(), "🌍");
-    }
-
-    #[test]
-    fn read_utf16be_truncated_data_eof() {
-        // charCount = 3이지만 2문자 분량만 제공 → UnexpectedEof
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&3u32.to_be_bytes()); // charCount = 3
-        buf.extend_from_slice(&0x0041u16.to_be_bytes()); // 'A'
-        buf.extend_from_slice(&0x0042u16.to_be_bytes()); // 'B'
-        // 3번째 문자 없음
-        let mut r = BufReader::new(&buf);
-        let err = r.read_utf16be().unwrap_err();
-        assert!(matches!(err, OzError::UnexpectedEof { .. }));
-    }
-
-    #[test]
-    fn read_utf_truncated_data_eof() {
-        // byteLen = 10이지만 5바이트만 제공 → UnexpectedEof
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&10u16.to_be_bytes()); // byteLen = 10
-        buf.extend_from_slice(b"hello"); // 5바이트만
-        let mut r = BufReader::new(&buf);
-        let err = r.read_utf().unwrap_err();
-        assert!(matches!(err, OzError::UnexpectedEof { .. }));
-    }
-
-    #[test]
-    fn read_bytes_zero_length() {
-        let data = [0x01, 0x02];
-        let mut r = BufReader::new(&data);
-        let slice = r.read_bytes(0).unwrap();
-        assert_eq!(slice.len(), 0);
-        assert_eq!(r.offset(), 0); // 오프셋 변경 없음
-    }
-
-    #[test]
-    fn set_offset_clamp_to_buf_len() {
-        let data = [0x01, 0x02, 0x03];
-        let mut r = BufReader::new(&data);
-        r.set_offset(100); // 버퍼 길이(3)보다 큼
-        assert_eq!(r.offset(), 3); // 클램핑
-        assert_eq!(r.remaining(), 0);
-    }
-
-    #[test]
-    fn write_bytes_basic() {
-        let mut w = BufWriter::new();
-        w.write_bytes(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
-        assert_eq!(&w.as_bytes()[..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
-        assert_eq!(w.offset(), 4);
-    }
-
-    #[test]
-    fn write_bytes_empty() {
-        let mut w = BufWriter::new();
-        w.write_bytes(&[]).unwrap();
-        assert_eq!(w.offset(), 0);
-    }
-
-    #[test]
-    fn roundtrip_i64() {
-        let mut w = BufWriter::new();
-        w.write_i64(-9876543210).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_i64().unwrap(), -9876543210);
-    }
-
-    #[test]
-    fn roundtrip_f32() {
-        let mut w = BufWriter::new();
-        w.write_f32(std::f32::consts::PI).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        let v = r.read_f32().unwrap();
-        assert!((v - std::f32::consts::PI).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn roundtrip_f64() {
-        let mut w = BufWriter::new();
-        w.write_f64(std::f64::consts::E).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        let v = r.read_f64().unwrap();
-        assert!((v - std::f64::consts::E).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn write_i64_overflow() {
-        let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 4; // 4 bytes left, need 8
-        let err = w.write_i64(0).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { needed: 8, .. }));
-    }
-
-    #[test]
-    fn write_f32_overflow() {
-        let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 2; // 2 bytes left, need 4
-        let err = w.write_f32(0.0).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { needed: 4, .. }));
-    }
-
-    #[test]
-    fn write_f64_overflow() {
-        let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 4; // 4 bytes left, need 8
-        let err = w.write_f64(0.0).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { needed: 8, .. }));
-    }
-
-    #[test]
-    fn write_bytes_overflow() {
-        let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 2;
-        let err = w.write_bytes(&[0x00; 5]).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { .. }));
-    }
-
-    // ── read_i8 / write_i8 tests ──
-
-    #[test]
-    fn read_i8_positive() {
-        let data = [0x42]; // 66 as i8
-        let mut r = BufReader::new(&data);
-        assert_eq!(r.read_i8().unwrap(), 0x42);
-        assert_eq!(r.offset(), 1);
-    }
-
-    #[test]
-    fn read_i8_negative() {
-        let data = [0xFF]; // -1 as i8
-        let mut r = BufReader::new(&data);
-        assert_eq!(r.read_i8().unwrap(), -1);
-    }
-
-    #[test]
-    fn read_i8_min_max() {
-        let data = [0x80, 0x7F]; // i8::MIN, i8::MAX
-        let mut r = BufReader::new(&data);
-        assert_eq!(r.read_i8().unwrap(), i8::MIN);
-        assert_eq!(r.read_i8().unwrap(), i8::MAX);
-    }
-
-    #[test]
-    fn read_i8_eof() {
-        let data: [u8; 0] = [];
-        let mut r = BufReader::new(&data);
-        let err = r.read_i8().unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::UnexpectedEof {
-                offset: 0,
-                needed: 1,
-                available: 0
-            }
-        ));
-    }
-
-    #[test]
-    fn write_i8_positive() {
-        let mut w = BufWriter::new();
-        w.write_i8(42).unwrap();
-        assert_eq!(w.as_bytes()[0], 42);
-        assert_eq!(w.offset(), 1);
-    }
-
-    #[test]
-    fn write_i8_negative() {
-        let mut w = BufWriter::new();
-        w.write_i8(-1).unwrap();
-        assert_eq!(w.as_bytes()[0], 0xFF);
-        assert_eq!(w.offset(), 1);
-    }
-
-    #[test]
-    fn write_i8_overflow() {
-        let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE;
-        let err = w.write_i8(0).unwrap_err();
-        assert!(matches!(err, OzError::BufferOverflow { needed: 1, .. }));
-    }
-
-    #[test]
-    fn roundtrip_i8() {
-        let mut w = BufWriter::new();
-        w.write_i8(-128).unwrap();
-        w.write_i8(0).unwrap();
-        w.write_i8(127).unwrap();
-        let mut r = BufReader::new(w.as_bytes());
-        assert_eq!(r.read_i8().unwrap(), -128);
-        assert_eq!(r.read_i8().unwrap(), 0);
-        assert_eq!(r.read_i8().unwrap(), 127);
-    }
-
-    // ── read_u64 tests ──
+    // ── read_u64 테스트 ──
 
     #[test]
     fn read_u64_basic() {
@@ -1355,28 +1191,55 @@ mod tests {
         assert_eq!(r.read_u64().unwrap(), 0);
     }
 
+    // ── read_i8 테스트 ──
+
     #[test]
-    fn read_u64_eof() {
-        let data = [0x00; 4]; // 4 bytes, need 8
+    fn read_i8_positive() {
+        let data = [0x42];
         let mut r = BufReader::new(&data);
-        let err = r.read_u64().unwrap_err();
-        assert!(matches!(
-            err,
-            OzError::UnexpectedEof {
-                offset: 0,
-                needed: 8,
-                available: 4
-            }
-        ));
+        assert_eq!(r.read_i8().unwrap(), 0x42);
+        assert_eq!(r.offset(), 1);
     }
 
-    // ── write_oz_utf / read_oz_utf tests ──
+    #[test]
+    fn read_i8_negative() {
+        let data = [0xFF]; // -1 as i8
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_i8().unwrap(), -1);
+    }
+
+    #[test]
+    fn read_i8_min_max() {
+        let data = [0x80, 0x7F]; // i8::MIN, i8::MAX
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_i8().unwrap(), i8::MIN);
+        assert_eq!(r.read_i8().unwrap(), i8::MAX);
+    }
+
+    // ── write_i8 테스트 ──
+
+    #[test]
+    fn write_i8_positive() {
+        let mut w = BufWriter::new();
+        w.write_i8(42).unwrap();
+        assert_eq!(w.as_bytes()[0], 42);
+        assert_eq!(w.offset(), 1);
+    }
+
+    #[test]
+    fn write_i8_negative() {
+        let mut w = BufWriter::new();
+        w.write_i8(-1).unwrap();
+        assert_eq!(w.as_bytes()[0], 0xFF);
+        assert_eq!(w.offset(), 1);
+    }
+
+    // ── write_oz_utf / read_oz_utf 테스트 ──
 
     #[test]
     fn write_oz_utf_basic() {
         let mut w = BufWriter::new();
         w.write_oz_utf("hello").unwrap();
-        // 4B i32 길이 prefix + 5B 데이터
         assert_eq!(&w.as_bytes()[..4], &5i32.to_be_bytes());
         assert_eq!(&w.as_bytes()[4..9], b"hello");
         assert_eq!(w.offset(), 9);
@@ -1404,8 +1267,7 @@ mod tests {
     fn write_oz_utf_null_char_modified_utf8() {
         let mut w = BufWriter::new();
         w.write_oz_utf("A\0B").unwrap();
-        // "A\0B" → 0x41, 0xC0, 0x80, 0x42 (4 bytes in Modified UTF-8)
-        assert_eq!(&w.as_bytes()[..4], &4i32.to_be_bytes()); // byteLen = 4
+        assert_eq!(&w.as_bytes()[..4], &4i32.to_be_bytes());
         assert_eq!(&w.as_bytes()[4..8], &[0x41, 0xC0, 0x80, 0x42]);
         assert_eq!(w.offset(), 8);
     }
@@ -1413,7 +1275,7 @@ mod tests {
     #[test]
     fn write_oz_utf_overflow() {
         let mut w = BufWriter::new();
-        w.offset = REQUEST_FRAME_SIZE - 3; // 3 bytes left, need 4 + 5 = 9
+        w.offset = REQUEST_FRAME_SIZE - 3;
         let err = w.write_oz_utf("hello").unwrap_err();
         assert!(matches!(err, OzError::BufferOverflow { .. }));
     }
@@ -1441,7 +1303,7 @@ mod tests {
 
     #[test]
     fn read_oz_utf_empty() {
-        let buf = 0i32.to_be_bytes(); // byteLen = 0
+        let buf = 0i32.to_be_bytes();
         let mut r = BufReader::new(&buf);
         assert_eq!(r.read_oz_utf().unwrap(), "");
     }
@@ -1459,14 +1321,24 @@ mod tests {
     }
 
     #[test]
+    fn read_oz_utf_negative_length() {
+        let buf = (-1i32).to_be_bytes();
+        let mut r = BufReader::new(&buf);
+        let err = r.read_oz_utf().unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { .. }));
+    }
+
+    #[test]
     fn read_oz_utf_truncated_data_eof() {
         let mut buf = Vec::new();
-        buf.extend_from_slice(&10i32.to_be_bytes()); // byteLen = 10
+        buf.extend_from_slice(&10i32.to_be_bytes());
         buf.extend_from_slice(b"hello"); // 5바이트만
         let mut r = BufReader::new(&buf);
         let err = r.read_oz_utf().unwrap_err();
         assert!(matches!(err, OzError::UnexpectedEof { .. }));
     }
+
+    // ── oz_utf roundtrip 테스트 ──
 
     #[test]
     fn roundtrip_oz_utf_basic() {
@@ -1493,8 +1365,18 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_oz_utf_supplementary_char() {
+        // 보충 문자 (U+10000 이상) roundtrip 테스트
+        let mut w = BufWriter::new();
+        w.write_oz_utf("Hello 🌍🎉").unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_oz_utf().unwrap(), "Hello 🌍🎉");
+    }
+
+    // ── prefix 크기 비교 테스트 ──
+
+    #[test]
     fn oz_utf_uses_4byte_prefix_vs_utf_2byte_prefix() {
-        // write_utf는 2바이트 prefix, write_oz_utf는 4바이트 prefix
         let mut w1 = BufWriter::new();
         w1.write_utf("test").unwrap();
         assert_eq!(w1.offset(), 2 + 4); // 2B prefix + 4B data
@@ -1502,5 +1384,69 @@ mod tests {
         let mut w2 = BufWriter::new();
         w2.write_oz_utf("test").unwrap();
         assert_eq!(w2.offset(), 4 + 4); // 4B prefix + 4B data
+    }
+
+    // ── UTF-16BE 에지 케이스 ──
+
+    #[test]
+    fn read_utf16be_surrogate_pair() {
+        let mut buf = Vec::new();
+        let s = "🌍";
+        let u16_units: Vec<u16> = s.encode_utf16().collect();
+        assert_eq!(u16_units.len(), 2);
+        buf.extend_from_slice(&(u16_units.len() as u32).to_be_bytes());
+        for ch in &u16_units {
+            buf.extend_from_slice(&ch.to_be_bytes());
+        }
+        let mut r = BufReader::new(&buf);
+        assert_eq!(r.read_utf16be().unwrap(), "🌍");
+    }
+
+    #[test]
+    fn read_utf16be_truncated_data_eof() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3u32.to_be_bytes());
+        buf.extend_from_slice(&0x0041u16.to_be_bytes());
+        buf.extend_from_slice(&0x0042u16.to_be_bytes());
+        let mut r = BufReader::new(&buf);
+        let err = r.read_utf16be().unwrap_err();
+        assert!(matches!(err, OzError::UnexpectedEof { .. }));
+    }
+
+    #[test]
+    fn read_utf_truncated_data_eof() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&10u16.to_be_bytes());
+        buf.extend_from_slice(b"hello"); // 5바이트만
+        let mut r = BufReader::new(&buf);
+        let err = r.read_utf().unwrap_err();
+        assert!(matches!(err, OzError::UnexpectedEof { .. }));
+    }
+
+    // ── 복합 순차 roundtrip 테스트 ──
+
+    #[test]
+    fn roundtrip_multiple_types_sequential() {
+        let mut w = BufWriter::new();
+        w.write_u32(crate::constants::MAGIC).unwrap();
+        w.write_utf16be("TestClass").unwrap();
+        w.write_u32(2).unwrap();
+        w.write_utf16be("key1").unwrap();
+        w.write_utf16be("value1").unwrap();
+        w.write_utf16be("key2").unwrap();
+        w.write_utf16be("value2").unwrap();
+        w.write_bool(true).unwrap();
+        w.write_i32(-42).unwrap();
+
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_u32().unwrap(), crate::constants::MAGIC);
+        assert_eq!(r.read_utf16be().unwrap(), "TestClass");
+        assert_eq!(r.read_u32().unwrap(), 2);
+        assert_eq!(r.read_utf16be().unwrap(), "key1");
+        assert_eq!(r.read_utf16be().unwrap(), "value1");
+        assert_eq!(r.read_utf16be().unwrap(), "key2");
+        assert_eq!(r.read_utf16be().unwrap(), "value2");
+        assert!(r.read_bool().unwrap());
+        assert_eq!(r.read_i32().unwrap(), -42);
     }
 }
