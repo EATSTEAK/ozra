@@ -106,6 +106,14 @@ pub enum OzError {
     /// Repository 압축 해제 실패
     #[error("failed to decompress repository content")]
     DecompressionError,
+
+    /// 필드 값과 SQL 타입이 일치하지 않음
+    #[error("type mismatch: SqlType::{sql_type:?} expects {expected}, got {actual}")]
+    TypeMismatch {
+        sql_type: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// [`OzError`]를 사용하는 편의 Result 타입 별칭

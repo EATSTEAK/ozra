@@ -1,12 +1,14 @@
-//! SQL 타입별 필드 값 디코딩 모듈
+//! SQL 타입별 필드 값 인코딩/디코딩 모듈
 //!
 //! OZ 프로토콜의 DataModule 응답에서 각 SQL 타입에 따라
-//! 바이너리 데이터를 [`FieldValue`]로 변환합니다.
+//! 바이너리 데이터를 [`FieldValue`]로 변환하거나, 그 역방향으로 직렬화합니다.
 //!
 //! ## 핵심 함수
 //!
 //! - [`read_field_value`] — SQL 타입별 단일 필드 값 디코딩
+//! - [`write_field_value`] — SQL 타입별 단일 필드 값 인코딩 (`read_field_value`의 역함수)
 //! - [`read_row`] — 필드 목록 기반 한 행 전체 디코딩
+//! - [`write_row`] — 필드 목록 기반 한 행 전체 인코딩
 //!
 //! ## SQL 타입별 인코딩 규칙
 //!
@@ -26,7 +28,7 @@
 use crate::constants::MAX_BINARY_LENGTH;
 use crate::error::{OzError, Result};
 use crate::types::{BasicField, FieldValue, Row, SqlType};
-use crate::wire::BufReader;
+use crate::wire::{BufReader, BufWriter};
 
 /// SQL 타입에 따라 바이너리 데이터에서 필드 값을 디코딩합니다.
 ///
@@ -162,6 +164,193 @@ pub fn read_field_value(reader: &mut BufReader, sql_type: SqlType) -> Result<Fie
     }
 }
 
+/// [`FieldValue`] 변형의 이름을 반환하는 헬퍼 함수 (에러 메시지용)
+fn field_value_name(value: &FieldValue) -> &'static str {
+    match value {
+        FieldValue::Null => "Null",
+        FieldValue::String(_) => "String",
+        FieldValue::Int(_) => "Int",
+        FieldValue::Long(_) => "Long",
+        FieldValue::Float(_) => "Float",
+        FieldValue::Double(_) => "Double",
+        FieldValue::Bool(_) => "Bool",
+        FieldValue::DateTime(_) => "DateTime",
+        FieldValue::Binary(_) => "Binary",
+    }
+}
+
+/// 타입 불일치 에러를 생성하는 헬퍼 함수
+fn type_mismatch(sql_type: SqlType, expected: &str, actual: &FieldValue) -> OzError {
+    OzError::TypeMismatch {
+        sql_type: format!("{:?}", sql_type),
+        expected: expected.to_string(),
+        actual: field_value_name(actual).to_string(),
+    }
+}
+
+/// SQL 타입에 따라 [`FieldValue`]를 바이너리 형식으로 직렬화합니다.
+///
+/// [`read_field_value()`]의 역함수입니다. 각 `SqlType`에 대해
+/// `read_field_value()`가 읽는 것과 동일한 와이어 포맷으로 씁니다.
+///
+/// # 인자
+///
+/// - `writer` — 현재 위치에서 쓸 [`BufWriter`]
+/// - `sql_type` — 필드의 SQL 타입 코드
+/// - `value` — 직렬화할 [`FieldValue`]
+///
+/// # 에러
+///
+/// - `sql_type`과 `value` 변형이 일치하지 않으면 [`OzError::TypeMismatch`]를 반환합니다.
+///   (예: `SqlType::Integer`인데 `FieldValue::String`이 들어온 경우)
+/// - 버퍼 공간이 부족하면 [`OzError::BufferOverflow`]를 반환합니다.
+///
+/// # SQL 타입별 직렬화 규칙
+///
+/// | SQL 타입 | Null 표현 | 값 표현 |
+/// |---|---|---|
+/// | `TinyInt`, `SmallInt` | `i32::MIN` | `i32` |
+/// | `Integer` | `bool(true)` | `bool(false) + i32` |
+/// | `BigInt` | `bool(true)` | `bool(false) + i64` |
+/// | `Real` | `bool(true)` | `bool(false) + f32` |
+/// | `Float`, `Double` | `bool(true)` | `bool(false) + f64` |
+/// | `Bit` | (null 없음) | `u8` |
+/// | `Char`, `VarChar`, `LongVarChar`, `Clob` | `bool(true)` | `bool(false) + UTF` |
+/// | `Numeric`, `Decimal` | 빈 문자열 UTF | `UTF` |
+/// | `Date`, `Time`, `Timestamp` | `(i32::MIN << 32)` | `i64` |
+/// | `Binary`, `VarBinary`, `LongVarBinary`, `Blob` | `i32(0)` | `i32(len) + bytes` |
+pub fn write_field_value(
+    writer: &mut BufWriter,
+    sql_type: SqlType,
+    value: &FieldValue,
+) -> Result<()> {
+    match sql_type {
+        // BasicSmallField: TINYINT(-6), SMALLINT(5)
+        // 4B i32, null sentinel = i32::MIN (0x80000000)
+        SqlType::TinyInt | SqlType::SmallInt => match value {
+            FieldValue::Null => writer.write_i32(i32::MIN),
+            FieldValue::Int(v) => writer.write_i32(*v),
+            _ => Err(type_mismatch(sql_type, "Int", value)),
+        },
+
+        // BasicIntField: INTEGER(4)
+        // bool(1B) + i32(4B), null이면 bool == true
+        SqlType::Integer => match value {
+            FieldValue::Null => writer.write_bool(true),
+            FieldValue::Int(v) => {
+                writer.write_bool(false)?;
+                writer.write_i32(*v)
+            }
+            _ => Err(type_mismatch(sql_type, "Int", value)),
+        },
+
+        // BasicLongField: BIGINT(-5)
+        // bool(1B) + i64(8B), null이면 bool == true
+        SqlType::BigInt => match value {
+            FieldValue::Null => writer.write_bool(true),
+            FieldValue::Long(v) => {
+                writer.write_bool(false)?;
+                writer.write_i64(*v)
+            }
+            _ => Err(type_mismatch(sql_type, "Long", value)),
+        },
+
+        // BasicFloatField: REAL(7)
+        // bool(1B) + f32(4B), null이면 bool == true
+        SqlType::Real => match value {
+            FieldValue::Null => writer.write_bool(true),
+            FieldValue::Float(v) => {
+                writer.write_bool(false)?;
+                writer.write_f32(*v)
+            }
+            _ => Err(type_mismatch(sql_type, "Float", value)),
+        },
+
+        // BasicDoubleField: FLOAT(6), DOUBLE(8)
+        // bool(1B) + f64(8B), null이면 bool == true
+        SqlType::Float | SqlType::Double => match value {
+            FieldValue::Null => writer.write_bool(true),
+            FieldValue::Double(v) => {
+                writer.write_bool(false)?;
+                writer.write_f64(*v)
+            }
+            _ => Err(type_mismatch(sql_type, "Double", value)),
+        },
+
+        // BasicBooleanField: BIT(-7)
+        // u8(1B), null 없음
+        SqlType::Bit => match value {
+            FieldValue::Bool(v) => writer.write_u8(if *v { 1 } else { 0 }),
+            _ => Err(type_mismatch(sql_type, "Bool", value)),
+        },
+
+        // BasicStringField: CHAR(1), VARCHAR(12), LONGVARCHAR(-1), CLOB(2005)
+        // bool(1B) + writeUTF(2+NB), null이면 bool == true
+        SqlType::Char | SqlType::VarChar | SqlType::LongVarChar | SqlType::Clob => match value {
+            FieldValue::Null => writer.write_bool(true),
+            FieldValue::String(s) => {
+                writer.write_bool(false)?;
+                writer.write_utf(s)
+            }
+            _ => Err(type_mismatch(sql_type, "String", value)),
+        },
+
+        // BasicStringField2: NUMERIC(2), DECIMAL(3) — ⚠️ boolean prefix 없음!
+        // writeUTF(2+NB) 직접, null이면 빈 문자열
+        SqlType::Numeric | SqlType::Decimal => match value {
+            FieldValue::Null => writer.write_utf(""),
+            FieldValue::String(s) => writer.write_utf(s),
+            _ => Err(type_mismatch(sql_type, "String", value)),
+        },
+
+        // BasicDateField: DATE(91), TIME(92), TIMESTAMP(93)
+        // i64(8B) = epoch milliseconds
+        // null: hi == i32::MIN (0x80000000) && lo == 0
+        SqlType::Date | SqlType::Time | SqlType::Timestamp => match value {
+            FieldValue::Null => {
+                let null_millis: i64 = (i32::MIN as i64) << 32;
+                writer.write_i64(null_millis)
+            }
+            FieldValue::DateTime(millis) => writer.write_i64(*millis),
+            _ => Err(type_mismatch(sql_type, "DateTime", value)),
+        },
+
+        // BasicBinaryField: BINARY(-2), VARBINARY(-3), LONGVARBINARY(-4), BLOB(2004)
+        // i32(4B) = length, 그 다음 raw bytes
+        SqlType::Binary | SqlType::VarBinary | SqlType::LongVarBinary | SqlType::Blob => {
+            match value {
+                FieldValue::Null => writer.write_i32(0),
+                FieldValue::Binary(data) => {
+                    writer.write_i32(data.len() as i32)?;
+                    writer.write_bytes(data)
+                }
+                _ => Err(type_mismatch(sql_type, "Binary", value)),
+            }
+        }
+    }
+}
+
+/// 알 수 없는 SQL 타입 코드에 대해 필드 값을 씁니다.
+///
+/// [`BasicStringField`](SqlType::Char) 동일 방식으로 처리합니다:
+/// `bool(1B) + writeUTF(2+NB)`, null이면 `bool == true`.
+///
+/// 이 함수는 [`SqlType`]으로 변환할 수 없는 원시 SQL 코드를 처리할 때 사용합니다.
+pub fn write_field_value_default(writer: &mut BufWriter, value: &FieldValue) -> Result<()> {
+    match value {
+        FieldValue::Null => writer.write_bool(true),
+        FieldValue::String(s) => {
+            writer.write_bool(false)?;
+            writer.write_utf(s)
+        }
+        _ => Err(OzError::TypeMismatch {
+            sql_type: "Unknown".to_string(),
+            expected: "String".to_string(),
+            actual: field_value_name(value).to_string(),
+        }),
+    }
+}
+
 /// 알 수 없는 SQL 타입 코드에 대해 필드 값을 읽습니다.
 ///
 /// [`BasicStringField`](SqlType::Char) 동일 방식으로 처리합니다:
@@ -195,6 +384,26 @@ pub fn read_row(reader: &mut BufReader, fields: &[BasicField]) -> Result<Row> {
             Ok((field.name.clone(), value))
         })
         .collect()
+}
+
+/// 필드 목록을 기반으로 한 행(row)의 전체 필드 값을 직렬화합니다.
+///
+/// [`read_row()`]의 역함수입니다.
+///
+/// # 인자
+///
+/// - `writer` — 현재 위치에서 쓸 [`BufWriter`]
+/// - `fields` — 행의 필드 정의 목록 ([`BasicField`])
+/// - `row` — 직렬화할 `(필드명, 필드값)` 쌍의 벡터
+///
+/// # 에러
+///
+/// 필드 수와 행 값의 수가 다르거나, 타입 불일치 시 에러를 반환합니다.
+pub fn write_row(writer: &mut BufWriter, fields: &[BasicField], row: &Row) -> Result<()> {
+    for (field, (_name, value)) in fields.iter().zip(row.iter()) {
+        write_field_value(writer, field.sql_type, value)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -999,5 +1208,689 @@ mod tests {
         let mut r = BufReader::new(&data);
         let err = read_row(&mut r, &fields);
         assert!(err.is_err());
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // write_field_value() roundtrip 테스트
+    // ══════════════════════════════════════════════════════════════
+
+    /// write → read roundtrip 헬퍼: write_field_value로 쓰고 read_field_value로 읽어서 비교
+    fn assert_roundtrip(sql_type: SqlType, value: &FieldValue) {
+        let mut w = BufWriter::new();
+        write_field_value(&mut w, sql_type, value).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let read_back = read_field_value(&mut r, sql_type).unwrap();
+        assert_eq!(&read_back, value, "roundtrip failed for {:?}", sql_type);
+        assert_eq!(
+            r.offset(),
+            data.len(),
+            "not all bytes consumed for {:?}",
+            sql_type
+        );
+    }
+
+    // -- TinyInt roundtrip --
+
+    #[test]
+    fn test_write_tinyint_normal() {
+        assert_roundtrip(SqlType::TinyInt, &FieldValue::Int(42));
+    }
+
+    #[test]
+    fn test_write_tinyint_null() {
+        assert_roundtrip(SqlType::TinyInt, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_tinyint_zero() {
+        assert_roundtrip(SqlType::TinyInt, &FieldValue::Int(0));
+    }
+
+    #[test]
+    fn test_write_tinyint_negative() {
+        assert_roundtrip(SqlType::TinyInt, &FieldValue::Int(-100));
+    }
+
+    // -- SmallInt roundtrip --
+
+    #[test]
+    fn test_write_smallint_normal() {
+        assert_roundtrip(SqlType::SmallInt, &FieldValue::Int(256));
+    }
+
+    #[test]
+    fn test_write_smallint_null() {
+        assert_roundtrip(SqlType::SmallInt, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_smallint_zero() {
+        assert_roundtrip(SqlType::SmallInt, &FieldValue::Int(0));
+    }
+
+    #[test]
+    fn test_write_smallint_negative() {
+        assert_roundtrip(SqlType::SmallInt, &FieldValue::Int(-100));
+    }
+
+    // -- Integer roundtrip --
+
+    #[test]
+    fn test_write_integer_normal() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(12345));
+    }
+
+    #[test]
+    fn test_write_integer_null() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_integer_zero() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(0));
+    }
+
+    #[test]
+    fn test_write_integer_negative() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(-999));
+    }
+
+    // -- BigInt roundtrip --
+
+    #[test]
+    fn test_write_bigint_normal() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Long(9876543210));
+    }
+
+    #[test]
+    fn test_write_bigint_null() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_bigint_zero() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Long(0));
+    }
+
+    #[test]
+    fn test_write_bigint_negative() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Long(-1234567890123));
+    }
+
+    // -- Real roundtrip --
+
+    #[test]
+    fn test_write_real_normal() {
+        let mut w = BufWriter::new();
+        write_field_value(&mut w, SqlType::Real, &FieldValue::Float(1.5_f32)).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let v = read_field_value(&mut r, SqlType::Real).unwrap();
+        match v {
+            FieldValue::Float(f) => assert!((f - 1.5_f32).abs() < 0.001),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_write_real_null() {
+        assert_roundtrip(SqlType::Real, &FieldValue::Null);
+    }
+
+    // -- Float/Double roundtrip --
+
+    #[test]
+    fn test_write_float_normal() {
+        let mut w = BufWriter::new();
+        write_field_value(
+            &mut w,
+            SqlType::Float,
+            &FieldValue::Double(std::f64::consts::PI),
+        )
+        .unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let v = read_field_value(&mut r, SqlType::Float).unwrap();
+        match v {
+            FieldValue::Double(d) => {
+                assert!((d - std::f64::consts::PI).abs() < f64::EPSILON)
+            }
+            other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_write_float_null() {
+        assert_roundtrip(SqlType::Float, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_double_normal() {
+        let mut w = BufWriter::new();
+        write_field_value(&mut w, SqlType::Double, &FieldValue::Double(1.23456)).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let v = read_field_value(&mut r, SqlType::Double).unwrap();
+        match v {
+            FieldValue::Double(d) => assert!((d - 1.23456).abs() < 0.0001),
+            other => panic!("expected Double, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_write_double_null() {
+        assert_roundtrip(SqlType::Double, &FieldValue::Null);
+    }
+
+    // -- Bit roundtrip --
+
+    #[test]
+    fn test_write_bit_true() {
+        assert_roundtrip(SqlType::Bit, &FieldValue::Bool(true));
+    }
+
+    #[test]
+    fn test_write_bit_false() {
+        assert_roundtrip(SqlType::Bit, &FieldValue::Bool(false));
+    }
+
+    // -- String field roundtrip (Char, VarChar, LongVarChar, Clob) --
+
+    #[test]
+    fn test_write_varchar_normal() {
+        assert_roundtrip(
+            SqlType::VarChar,
+            &FieldValue::String("hello world".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_write_varchar_null() {
+        assert_roundtrip(SqlType::VarChar, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_char_normal() {
+        assert_roundtrip(SqlType::Char, &FieldValue::String("A".to_string()));
+    }
+
+    #[test]
+    fn test_write_longvarchar_normal() {
+        assert_roundtrip(
+            SqlType::LongVarChar,
+            &FieldValue::String("장문 텍스트".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_write_clob_null() {
+        assert_roundtrip(SqlType::Clob, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_clob_normal() {
+        assert_roundtrip(
+            SqlType::Clob,
+            &FieldValue::String("CLOB 데이터".to_string()),
+        );
+    }
+
+    // -- Numeric/Decimal roundtrip --
+
+    #[test]
+    fn test_write_numeric_normal() {
+        assert_roundtrip(SqlType::Numeric, &FieldValue::String("123.456".to_string()));
+    }
+
+    #[test]
+    fn test_write_numeric_null() {
+        assert_roundtrip(SqlType::Numeric, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_decimal_normal() {
+        assert_roundtrip(
+            SqlType::Decimal,
+            &FieldValue::String("99999.99".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_write_decimal_null() {
+        assert_roundtrip(SqlType::Decimal, &FieldValue::Null);
+    }
+
+    // -- Date/Time/Timestamp roundtrip --
+
+    #[test]
+    fn test_write_date_normal() {
+        assert_roundtrip(SqlType::Date, &FieldValue::DateTime(1_700_000_000_000));
+    }
+
+    #[test]
+    fn test_write_date_null() {
+        assert_roundtrip(SqlType::Date, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_date_epoch_zero() {
+        assert_roundtrip(SqlType::Date, &FieldValue::DateTime(0));
+    }
+
+    #[test]
+    fn test_write_time_normal() {
+        assert_roundtrip(SqlType::Time, &FieldValue::DateTime(43_200_000));
+    }
+
+    #[test]
+    fn test_write_time_null() {
+        assert_roundtrip(SqlType::Time, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_timestamp_normal() {
+        assert_roundtrip(SqlType::Timestamp, &FieldValue::DateTime(1_609_459_200_000));
+    }
+
+    #[test]
+    fn test_write_timestamp_null() {
+        assert_roundtrip(SqlType::Timestamp, &FieldValue::Null);
+    }
+
+    // -- Binary/VarBinary/LongVarBinary/Blob roundtrip --
+
+    #[test]
+    fn test_write_binary_normal() {
+        assert_roundtrip(
+            SqlType::Binary,
+            &FieldValue::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        );
+    }
+
+    #[test]
+    fn test_write_binary_null() {
+        assert_roundtrip(SqlType::Binary, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_varbinary_normal() {
+        assert_roundtrip(
+            SqlType::VarBinary,
+            &FieldValue::Binary(vec![0x01, 0x02, 0x03]),
+        );
+    }
+
+    #[test]
+    fn test_write_longvarbinary_null() {
+        assert_roundtrip(SqlType::LongVarBinary, &FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_blob_normal() {
+        assert_roundtrip(SqlType::Blob, &FieldValue::Binary(vec![0xFF; 10]));
+    }
+
+    // -- write_field_value_default roundtrip --
+
+    #[test]
+    fn test_write_default_normal() {
+        let mut w = BufWriter::new();
+        write_field_value_default(
+            &mut w,
+            &FieldValue::String("unknown type value".to_string()),
+        )
+        .unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let v = read_field_value_default(&mut r).unwrap();
+        assert_eq!(v, FieldValue::String("unknown type value".to_string()));
+    }
+
+    #[test]
+    fn test_write_default_null() {
+        let mut w = BufWriter::new();
+        write_field_value_default(&mut w, &FieldValue::Null).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let v = read_field_value_default(&mut r).unwrap();
+        assert_eq!(v, FieldValue::Null);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // 타입 불일치 에러 테스트
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_write_integer_type_mismatch_string() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(
+            &mut w,
+            SqlType::Integer,
+            &FieldValue::String("oops".to_string()),
+        );
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_integer_type_mismatch_bool() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Integer, &FieldValue::Bool(true));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_varchar_type_mismatch_int() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::VarChar, &FieldValue::Int(42));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_bit_type_mismatch_int() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Bit, &FieldValue::Int(1));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_bit_type_mismatch_null() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Bit, &FieldValue::Null);
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_bigint_type_mismatch_int() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::BigInt, &FieldValue::Int(42));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_real_type_mismatch_double() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Real, &FieldValue::Double(1.5));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_double_type_mismatch_float() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Double, &FieldValue::Float(1.5_f32));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_date_type_mismatch_long() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Date, &FieldValue::Long(123));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_binary_type_mismatch_string() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(
+            &mut w,
+            SqlType::Binary,
+            &FieldValue::String("bytes".to_string()),
+        );
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_numeric_type_mismatch_int() {
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::Numeric, &FieldValue::Int(42));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_write_default_type_mismatch_int() {
+        let mut w = BufWriter::new();
+        let err = write_field_value_default(&mut w, &FieldValue::Int(42));
+        assert!(err.is_err());
+        assert!(matches!(err.unwrap_err(), OzError::TypeMismatch { .. }));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // write_row roundtrip 테스트
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_write_row_mixed_roundtrip() {
+        let fields = vec![
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::VarChar,
+                name: "NAME".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Integer,
+                name: "AGE".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Numeric,
+                name: "SALARY".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Bit,
+                name: "ACTIVE".to_string(),
+                nullable: false,
+                parsing_code: None,
+            },
+        ];
+
+        let original_row: Row = vec![
+            ("NAME".to_string(), FieldValue::String("홍길동".to_string())),
+            ("AGE".to_string(), FieldValue::Int(30)),
+            (
+                "SALARY".to_string(),
+                FieldValue::String("50000.00".to_string()),
+            ),
+            ("ACTIVE".to_string(), FieldValue::Bool(true)),
+        ];
+
+        let mut w = BufWriter::new();
+        write_row(&mut w, &fields, &original_row).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let read_back = read_row(&mut r, &fields).unwrap();
+
+        assert_eq!(read_back.len(), 4);
+        assert_eq!(read_back[0], original_row[0]);
+        assert_eq!(read_back[1], original_row[1]);
+        assert_eq!(read_back[2], original_row[2]);
+        assert_eq!(read_back[3], original_row[3]);
+    }
+
+    #[test]
+    fn test_write_row_all_nulls_roundtrip() {
+        let fields = vec![
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::VarChar,
+                name: "A".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Integer,
+                name: "B".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Date,
+                name: "C".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+        ];
+
+        let original_row: Row = vec![
+            ("A".to_string(), FieldValue::Null),
+            ("B".to_string(), FieldValue::Null),
+            ("C".to_string(), FieldValue::Null),
+        ];
+
+        let mut w = BufWriter::new();
+        write_row(&mut w, &fields, &original_row).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let read_back = read_row(&mut r, &fields).unwrap();
+
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].1, FieldValue::Null);
+        assert_eq!(read_back[1].1, FieldValue::Null);
+        assert_eq!(read_back[2].1, FieldValue::Null);
+    }
+
+    #[test]
+    fn test_write_row_empty_fields() {
+        let fields: Vec<BasicField> = vec![];
+        let row: Row = vec![];
+        let mut w = BufWriter::new();
+        write_row(&mut w, &fields, &row).unwrap();
+        assert_eq!(w.offset(), 0);
+    }
+
+    #[test]
+    fn test_write_row_all_types_roundtrip() {
+        let fields = vec![
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::TinyInt,
+                name: "F_TINYINT".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Integer,
+                name: "F_INT".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::BigInt,
+                name: "F_BIGINT".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Real,
+                name: "F_REAL".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Double,
+                name: "F_DOUBLE".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Bit,
+                name: "F_BIT".to_string(),
+                nullable: false,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::VarChar,
+                name: "F_VARCHAR".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Numeric,
+                name: "F_NUMERIC".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Timestamp,
+                name: "F_TIMESTAMP".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Binary,
+                name: "F_BINARY".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+        ];
+
+        let original_row: Row = vec![
+            ("F_TINYINT".to_string(), FieldValue::Int(7)),
+            ("F_INT".to_string(), FieldValue::Int(42)),
+            ("F_BIGINT".to_string(), FieldValue::Long(1_234_567_890_123)),
+            ("F_REAL".to_string(), FieldValue::Float(1.5_f32)),
+            ("F_DOUBLE".to_string(), FieldValue::Double(9.876)),
+            ("F_BIT".to_string(), FieldValue::Bool(true)),
+            (
+                "F_VARCHAR".to_string(),
+                FieldValue::String("test".to_string()),
+            ),
+            (
+                "F_NUMERIC".to_string(),
+                FieldValue::String("123.45".to_string()),
+            ),
+            (
+                "F_TIMESTAMP".to_string(),
+                FieldValue::DateTime(1_700_000_000_000),
+            ),
+            ("F_BINARY".to_string(), FieldValue::Binary(vec![0x01, 0x02])),
+        ];
+
+        let mut w = BufWriter::new();
+        write_row(&mut w, &fields, &original_row).unwrap();
+        let data = writer_to_vec(&w);
+        let mut r = BufReader::new(&data);
+        let read_back = read_row(&mut r, &fields).unwrap();
+
+        assert_eq!(read_back.len(), 10);
+        assert_eq!(read_back[0].1, FieldValue::Int(7));
+        assert_eq!(read_back[1].1, FieldValue::Int(42));
+        assert_eq!(read_back[2].1, FieldValue::Long(1_234_567_890_123));
+        assert!(matches!(read_back[3].1, FieldValue::Float(f) if (f - 1.5).abs() < 0.001));
+        assert!(matches!(read_back[4].1, FieldValue::Double(d) if (d - 9.876).abs() < 0.001));
+        assert_eq!(read_back[5].1, FieldValue::Bool(true));
+        assert_eq!(read_back[6].1, FieldValue::String("test".to_string()));
+        assert_eq!(read_back[7].1, FieldValue::String("123.45".to_string()));
+        assert_eq!(read_back[8].1, FieldValue::DateTime(1_700_000_000_000));
+        assert_eq!(read_back[9].1, FieldValue::Binary(vec![0x01, 0x02]));
     }
 }
