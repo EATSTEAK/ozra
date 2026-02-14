@@ -46,6 +46,7 @@ pub use error::{OzError, Result};
 pub use messages::repository::{
     RepositoryContentType, RepositoryItem, RepositoryRequestOptions, RepositoryStatus,
 };
+pub use messages::transaction::{TransactionDataSet, TransactionRequest, TransactionResponse};
 pub use types::{
     BasicField, DataModuleMeta, DataModuleResponse, DataSet, DataSetGroup, DataSetInfo, FieldKind,
     FieldValue, OzMessageHeader, RecordInfo, Row, SqlType,

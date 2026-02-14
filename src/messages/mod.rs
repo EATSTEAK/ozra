@@ -39,6 +39,7 @@ pub mod data_module;
 pub mod login;
 pub mod repository;
 mod traits;
+pub mod transaction;
 
 // Trait re-exports
 pub use traits::{OzRequest, OzRequestResponse, OzResponse};
@@ -59,6 +60,9 @@ pub use repository::{
     RepositoryContentType, RepositoryItem, RepositoryRequest, RepositoryRequestOptions,
     RepositoryResponse, RepositoryStatus, build_repository_request,
 };
+pub use transaction::{
+    TransactionDataSet, TransactionRequest, TransactionResponse, build_transaction_request,
+};
 
 /// 메시지 클래스명 상수
 ///
@@ -73,4 +77,6 @@ pub mod class_names {
     pub const REPOSITORY_ITEM: &str = RepositoryRequest::CLASS_NAME;
     /// DataModule 요청 클래스명
     pub const DATA_MODULE: &str = DataModuleRequest::CLASS_NAME;
+    /// Transaction 요청 클래스명
+    pub const TRANSACTION: &str = TransactionRequest::CLASS_NAME;
 }
