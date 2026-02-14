@@ -321,6 +321,12 @@ pub fn write_field_value(
             match value {
                 FieldValue::Null => writer.write_i32(0),
                 FieldValue::Binary(data) => {
+                    if data.len() > MAX_BINARY_LENGTH {
+                        return Err(OzError::BinaryTooLarge {
+                            length: data.len(),
+                            max: MAX_BINARY_LENGTH,
+                        });
+                    }
                     writer.write_i32(data.len() as i32)?;
                     writer.write_bytes(data)
                 }
@@ -400,6 +406,16 @@ pub fn read_row(reader: &mut BufReader, fields: &[BasicField]) -> Result<Row> {
 ///
 /// 필드 수와 행 값의 수가 다르거나, 타입 불일치 시 에러를 반환합니다.
 pub fn write_row(writer: &mut BufWriter, fields: &[BasicField], row: &Row) -> Result<()> {
+    if fields.len() != row.len() {
+        return Err(OzError::ProtocolError {
+            code: 0,
+            message: format!(
+                "field count mismatch: {} fields vs {} values",
+                fields.len(),
+                row.len()
+            ),
+        });
+    }
     for (field, (_name, value)) in fields.iter().zip(row.iter()) {
         write_field_value(writer, field.sql_type, value)?;
     }
@@ -1892,5 +1908,88 @@ mod tests {
         assert_eq!(read_back[7].1, FieldValue::String("123.45".to_string()));
         assert_eq!(read_back[8].1, FieldValue::DateTime(1_700_000_000_000));
         assert_eq!(read_back[9].1, FieldValue::Binary(vec![0x01, 0x02]));
+    }
+    // ══════════════════════════════════════════════════════════════
+    // 빈 바이너리 lossy 변환 문서화 테스트
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn write_read_binary_empty_is_lossy_null() {
+        // 빈 바이너리(len=0)는 write 시 i32(0)으로 직렬화되고,
+        // read 시 length <= 0 조건에 의해 Null로 해석됩니다.
+        // 이는 프로토콜 제약으로 인한 sentinel 값(0) 충돌 때문이며,
+        // Binary(vec![]) → write → read = Null 이 되는 lossy 변환입니다.
+        let value = FieldValue::Binary(vec![]);
+
+        let mut w = BufWriter::new();
+        write_field_value(&mut w, SqlType::Binary, &value).unwrap();
+        let data = writer_to_vec(&w);
+
+        // write 결과: i32(0) = 4바이트 (len=0)
+        assert_eq!(data.len(), 4);
+
+        let mut r = BufReader::new(&data);
+        let read_back = read_field_value(&mut r, SqlType::Binary).unwrap();
+
+        // 빈 바이너리가 Null로 변환됨 (lossy)
+        assert_eq!(read_back, FieldValue::Null);
+        assert_ne!(
+            read_back, value,
+            "empty binary is lossy: Binary(vec![]) becomes Null after roundtrip"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // write_row 길이 불일치 에러 테스트
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_write_row_field_count_mismatch_more_fields() {
+        let fields = vec![
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Integer,
+                name: "A".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+            BasicField {
+                kind: FieldKind::Normal,
+                sql_type: SqlType::Integer,
+                name: "B".to_string(),
+                nullable: true,
+                parsing_code: None,
+            },
+        ];
+
+        // fields=2, row=1 → 에러
+        let row: Row = vec![("A".to_string(), FieldValue::Int(1))];
+        let mut w = BufWriter::new();
+        let err = write_row(&mut w, &fields, &row);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("field count mismatch"));
+    }
+
+    #[test]
+    fn test_write_row_field_count_mismatch_more_values() {
+        let fields = vec![BasicField {
+            kind: FieldKind::Normal,
+            sql_type: SqlType::Integer,
+            name: "A".to_string(),
+            nullable: true,
+            parsing_code: None,
+        }];
+
+        // fields=1, row=2 → 에러
+        let row: Row = vec![
+            ("A".to_string(), FieldValue::Int(1)),
+            ("B".to_string(), FieldValue::Int(2)),
+        ];
+        let mut w = BufWriter::new();
+        let err = write_row(&mut w, &fields, &row);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("field count mismatch"));
     }
 }

@@ -108,7 +108,7 @@ pub enum OzError {
     DecompressionError,
 
     /// 필드 값과 SQL 타입이 일치하지 않음
-    #[error("type mismatch: SqlType::{sql_type:?} expects {expected}, got {actual}")]
+    #[error("type mismatch: SqlType::{sql_type} expects {expected}, got {actual}")]
     TypeMismatch {
         sql_type: String,
         expected: String,
