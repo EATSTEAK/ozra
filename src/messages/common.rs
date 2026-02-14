@@ -266,14 +266,16 @@ pub fn parse_exception(reader: &mut BufReader) -> Result<OzError> {
     })
 }
 
-/// 응답 바이너리에서 에러를 감지합니다.
+/// 응답 바이너리에서 에러 필드를 파싱합니다 (내부 공통 로직).
 ///
-/// 처음 200바이트를 UTF-16BE로 디코딩하여 `"ExceptionMessage"` 포함 여부를 확인합니다.
+/// 처음 200바이트를 UTF-16BE 프로브하여 `"ExceptionMessage"` 포함 여부를 확인하고,
+/// 에러가 감지되면 에러 코드와 메시지를 한 번만 파싱하여 반환합니다.
 ///
-/// 에러가 감지되면 `Some(에러 메시지 문자열)`, 정상이면 `None`을 반환합니다.
+/// # Returns
 ///
-/// 구조화된 에러가 필요하면 [`check_error_result`]를 사용하세요.
-pub fn check_error(buf: &[u8]) -> Option<String> {
+/// - `Some((error_code, message))`: 에러가 감지된 경우
+/// - `None`: 정상 응답인 경우
+fn parse_error_fields(buf: &[u8]) -> Option<(i32, String)> {
     // 처음 200바이트를 2바이트씩 UTF-16BE로 디코딩
     let probe_len = buf.len().min(200);
     // probe_len이 홀수이면 짝수로 맞춤
@@ -295,7 +297,7 @@ pub fn check_error(buf: &[u8]) -> Option<String> {
     }
 
     // Exception format: magic(4) + className(4+N*2) + errorCode(4) + msgLen(4) + message(N*2)
-    let result: Result<String> = (|| {
+    let result: Result<(i32, String)> = (|| {
         let mut reader = BufReader::new(buf);
         let _magic = reader.read_u32()?; // skip magic
         let _class_name = reader.read_utf16be()?; // skip className
@@ -309,10 +311,24 @@ pub fn check_error(buf: &[u8]) -> Option<String> {
         }
         let msg =
             String::from_utf16(&u16_buf).unwrap_or_else(|_| "unparseable message".to_string());
-        Ok(format!("OZ Error {}: {}", error_code, msg))
+        Ok((error_code, msg))
     })();
 
-    Some(result.unwrap_or_else(|_| "OZ Error (unparseable)".to_string()))
+    match result {
+        Ok(fields) => Some(fields),
+        Err(_) => Some((-1, "OZ Error (unparseable)".to_string())),
+    }
+}
+
+/// 응답 바이너리에서 에러를 감지합니다.
+///
+/// 처음 200바이트를 UTF-16BE로 디코딩하여 `"ExceptionMessage"` 포함 여부를 확인합니다.
+///
+/// 에러가 감지되면 `Some(에러 메시지 문자열)`, 정상이면 `None`을 반환합니다.
+///
+/// 구조화된 에러가 필요하면 [`check_error_result`]를 사용하세요.
+pub fn check_error(buf: &[u8]) -> Option<String> {
+    parse_error_fields(buf).map(|(code, msg)| format!("OZ Error {}: {}", code, msg))
 }
 
 /// 응답 바이너리에서 에러를 감지하고 [`OzError::ProtocolError`]로 반환합니다.
@@ -332,18 +348,8 @@ pub fn check_error(buf: &[u8]) -> Option<String> {
 /// }
 /// ```
 pub fn check_error_result(buf: &[u8]) -> Result<()> {
-    if let Some(msg) = check_error(buf) {
-        // 에러 코드 재파싱 시도
-        let code = (|| -> Result<i32> {
-            let mut reader = BufReader::new(buf);
-            let _magic = reader.read_u32()?;
-            let _class_name = reader.read_utf16be()?;
-            let error_code = reader.read_i32()?;
-            Ok(error_code)
-        })()
-        .unwrap_or(-1);
-
-        return Err(OzError::ProtocolError { code, message: msg });
+    if let Some((code, message)) = parse_error_fields(buf) {
+        return Err(OzError::ProtocolError { code, message });
     }
     Ok(())
 }
