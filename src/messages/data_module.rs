@@ -146,72 +146,120 @@ impl OzRequestResponse for CompactDataModuleRequest {
     type Response = DataModuleResponse;
 }
 
+// ---------------------------------------------------------------------------
+// Phase helpers — private functions extracted from parse_payload()
+// ---------------------------------------------------------------------------
+
+/// Phase 1: 페이로드 헤더 파싱 (payloadSize, unknown, versionByte)
+fn parse_payload_header(reader: &mut BufReader) -> Result<i32> {
+    let payload_size = reader.read_i32()?;
+    let _unknown1 = reader.read_i32()?;
+    let _version_byte = reader.read_u8()?;
+    Ok(payload_size)
+}
+
+/// Phase 2: TTk 헤더 파싱 (version, prefix 검증, data_version)
+fn parse_ttk_header(reader: &mut BufReader) -> Result<(i32, i32)> {
+    let version = reader.read_i32()?;
+    let prefix = reader.read_utf()?;
+    if prefix != DATA_MODULE_PREFIX {
+        return Err(OzError::InvalidPrefix {
+            expected: DATA_MODULE_PREFIX.to_string(),
+            actual: prefix,
+        });
+    }
+    let data_version = reader.read_i32()?;
+    let _unknown2 = reader.read_i32()?;
+    let _unknown3 = reader.read_i32()?;
+    Ok((version, data_version))
+}
+
+/// Phase 3: 그룹 메타데이터 파싱 (group_count + DataSetGroup 목록)
+fn parse_group_meta(reader: &mut BufReader) -> Result<(i16, Vec<DataSetGroup>)> {
+    let group_count = reader.read_i16()?;
+    let mut groups = Vec::with_capacity(group_count as usize);
+    for _ in 0..group_count {
+        groups.push(parse_dataset_group(reader)?);
+    }
+    Ok((group_count, groups))
+}
+
+/// Phase 4: RecordInfo 배열 파싱 (total_data_size + 각 데이터셋별 RecordInfo)
+fn parse_record_info(
+    reader: &mut BufReader,
+    groups: &[DataSetGroup],
+) -> Result<(i32, Vec<Vec<RecordInfo>>)> {
+    let total_data_size = reader.read_i32()?;
+    let mut record_infos: Vec<Vec<RecordInfo>> = Vec::new();
+    for group in groups {
+        for ds in &group.datasets {
+            let mut ds_records = Vec::with_capacity(ds.row_count as usize);
+            for _ in 0..ds.row_count {
+                let length = reader.read_i32()?;
+                let offset = reader.read_i32()?;
+                ds_records.push(RecordInfo { length, offset });
+            }
+            record_infos.push(ds_records);
+        }
+    }
+    Ok((total_data_size, record_infos))
+}
+
+/// Phase 5: 데이터 blob 디코딩 (각 행의 필드값 읽기)
+fn decode_data_blob(
+    reader: &mut BufReader,
+    groups: &[DataSetGroup],
+    record_infos: &[Vec<RecordInfo>],
+) -> Result<Vec<DataSet>> {
+    let data_start = reader.offset();
+    let mut datasets: Vec<DataSet> = Vec::new();
+    let mut ri_idx = 0;
+
+    for group in groups {
+        let mut group_rows = Vec::new();
+        for _ds in &group.datasets {
+            for ri in &record_infos[ri_idx] {
+                // NOTE: Negative offset defense — guards against corrupted data
+                if ri.offset < 0 {
+                    return Err(OzError::UnexpectedEof {
+                        offset: data_start,
+                        needed: 0,
+                        available: reader.remaining(),
+                    });
+                }
+                let abs_offset = data_start + ri.offset as usize;
+                reader.set_offset(abs_offset);
+                let row = read_row(reader, &group.fields)?;
+                group_rows.push(row);
+            }
+            ri_idx += 1;
+        }
+        datasets.push((group.name.clone(), group_rows));
+    }
+
+    Ok(datasets)
+}
+
+// ---------------------------------------------------------------------------
+
 impl OzResponse for DataModuleResponse {
     const CLASS_NAME: &'static str = "DataModule";
 
     fn parse_payload(reader: &mut BufReader, header: OzMessageHeader) -> Result<Self> {
-        let payload_size = reader.read_i32()?;
-        let _unknown1 = reader.read_i32()?;
-        let _version_byte = reader.read_u8()?;
+        // Phase 1: Payload header
+        let payload_size = parse_payload_header(reader)?;
 
-        let version = reader.read_i32()?;
-        let prefix = reader.read_utf()?;
-        if prefix != DATA_MODULE_PREFIX {
-            return Err(OzError::InvalidPrefix {
-                expected: DATA_MODULE_PREFIX.to_string(),
-                actual: prefix,
-            });
-        }
-        let data_version = reader.read_i32()?;
-        let _unknown2 = reader.read_i32()?;
-        let _unknown3 = reader.read_i32()?;
+        // Phase 2: TTk header (version, prefix verification, data_version)
+        let (version, data_version) = parse_ttk_header(reader)?;
 
-        let group_count = reader.read_i16()?;
-        let mut groups = Vec::with_capacity(group_count as usize);
-        for _ in 0..group_count {
-            groups.push(parse_dataset_group(reader)?);
-        }
+        // Phase 3: Group metadata
+        let (group_count, groups) = parse_group_meta(reader)?;
 
-        let total_data_size = reader.read_i32()?;
+        // Phase 4: RecordInfo array
+        let (total_data_size, record_infos) = parse_record_info(reader, &groups)?;
 
-        let mut record_infos: Vec<Vec<RecordInfo>> = Vec::new();
-        for group in &groups {
-            for ds in &group.datasets {
-                let mut ds_records = Vec::with_capacity(ds.row_count as usize);
-                for _ in 0..ds.row_count {
-                    let length = reader.read_i32()?;
-                    let offset = reader.read_i32()?;
-                    ds_records.push(RecordInfo { length, offset });
-                }
-                record_infos.push(ds_records);
-            }
-        }
-
-        let data_start = reader.offset();
-        let mut datasets: Vec<DataSet> = Vec::new();
-        let mut ri_idx = 0;
-
-        for group in &groups {
-            let mut group_rows = Vec::new();
-            for _ds in &group.datasets {
-                for ri in &record_infos[ri_idx] {
-                    // NOTE: Negative offset defense — guards against corrupted data
-                    if ri.offset < 0 {
-                        return Err(OzError::UnexpectedEof {
-                            offset: data_start,
-                            needed: 0,
-                            available: reader.remaining(),
-                        });
-                    }
-                    let abs_offset = data_start + ri.offset as usize;
-                    reader.set_offset(abs_offset);
-                    let row = read_row(reader, &group.fields)?;
-                    group_rows.push(row);
-                }
-                ri_idx += 1;
-            }
-            datasets.push((group.name.clone(), group_rows));
-        }
+        // Phase 5: Data blob decoding
+        let datasets = decode_data_blob(reader, &groups, &record_infos)?;
 
         let meta = DataModuleMeta {
             payload_size,
