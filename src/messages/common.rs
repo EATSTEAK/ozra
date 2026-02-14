@@ -671,4 +671,213 @@ mod tests {
         assert!(matches!(err, OzError::ProtocolError { code: -99, .. }));
         assert!(err.to_string().contains("test error"));
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // §5 테스트 커버리지 강화 — 에러 응답 파싱 추가 시나리오
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_check_error_result_empty_buffer() {
+        // 빈 버퍼에서 check_error_result는 Ok(())를 반환해야 함
+        let buf: &[u8] = &[];
+        assert!(check_error_result(buf).is_ok());
+    }
+
+    #[test]
+    fn test_check_error_odd_byte_buffer() {
+        // 홀수 바이트 버퍼 — probe_bytes가 짝수로 맞춰져야 함
+        let buf: &[u8] = &[0x00, 0x45, 0x78];
+        assert!(check_error(buf).is_none());
+    }
+
+    #[test]
+    fn test_check_error_single_byte_buffer() {
+        // 1바이트 버퍼 — probe_bytes = 0이므로 None 반환
+        let buf: &[u8] = &[0xFF];
+        assert!(check_error(buf).is_none());
+    }
+
+    #[test]
+    fn test_check_error_with_truncated_exception() {
+        // ExceptionMessage를 포함하지만 에러코드/메시지 파싱이 실패하는 경우
+        // parse_error_fields 내부에서 파싱 실패 시 (-1, "unparseable error response") 반환
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer
+            .write_utf16be("oz.framework.OZCPExceptionMessage")
+            .unwrap();
+        // 에러 코드/메시지 없이 절단 — 이 시점에서 바이트가 부족
+        let pos = writer.offset();
+        let bytes = writer.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let result = check_error(&buf);
+        assert!(result.is_some());
+        let err_msg = result.unwrap();
+        // 파싱 실패 시 기본 에러 메시지
+        assert!(err_msg.contains("OZ Error"));
+        assert!(err_msg.contains("-1"));
+        assert!(err_msg.contains("unparseable error response"));
+    }
+
+    #[test]
+    fn test_check_error_result_with_truncated_exception() {
+        // check_error_result도 동일한 경우 Err(ProtocolError) 반환
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer
+            .write_utf16be("oz.framework.OZCPExceptionMessage")
+            .unwrap();
+        let pos = writer.offset();
+        let bytes = writer.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let err = check_error_result(&buf).unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { code: -1, .. }));
+    }
+
+    #[test]
+    fn test_check_error_with_korean_exception_message() {
+        // 한글 에러 메시지가 check_error를 통해 올바르게 반환되는지 확인
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer
+            .write_utf16be("oz.framework.OZCPExceptionMessage")
+            .unwrap();
+        writer.write_i32(-999).unwrap();
+        let msg = "접근이 거부되었습니다";
+        let u16_units: Vec<u16> = msg.encode_utf16().collect();
+        writer.write_u32(u16_units.len() as u32).unwrap();
+        for ch in &u16_units {
+            writer.write_u16(*ch).unwrap();
+        }
+        let buf = writer.into_bytes();
+
+        let result = check_error(&buf);
+        assert!(result.is_some());
+        let err_msg = result.unwrap();
+        assert!(err_msg.contains("-999"));
+        assert!(err_msg.contains("접근이 거부되었습니다"));
+    }
+
+    #[test]
+    fn test_check_error_result_with_korean_exception_message() {
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer
+            .write_utf16be("oz.framework.OZCPExceptionMessage")
+            .unwrap();
+        writer.write_i32(-42).unwrap();
+        let msg = "권한 부족";
+        let u16_units: Vec<u16> = msg.encode_utf16().collect();
+        writer.write_u32(u16_units.len() as u32).unwrap();
+        for ch in &u16_units {
+            writer.write_u16(*ch).unwrap();
+        }
+        let buf = writer.into_bytes();
+
+        let err = check_error_result(&buf).unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { code: -42, .. }));
+        assert!(err.to_string().contains("권한 부족"));
+    }
+
+    #[test]
+    fn test_parse_header_too_many_fields() {
+        // MAX_FIELD_COUNT + 1 → TooManyFields 에러
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer.write_utf16be("Test").unwrap();
+        writer.write_u32((MAX_FIELD_COUNT + 1) as u32).unwrap();
+        let pos = writer.offset();
+        let bytes = writer.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let mut reader = BufReader::new(&buf);
+        let err = parse_header(&mut reader).unwrap_err();
+        assert!(matches!(
+            err,
+            OzError::TooManyFields {
+                count,
+                max: MAX_FIELD_COUNT,
+            } if count == MAX_FIELD_COUNT + 1
+        ));
+    }
+
+    #[test]
+    fn test_parse_header_exactly_max_fields_boundary() {
+        // MAX_FIELD_COUNT 정확히 일치 → 에러가 아닌 (하지만 실제 필드 데이터가 없으므로 EOF)
+        // 이 테스트는 TooManyFields가 아닌 것을 검증합니다
+        let mut writer = BufWriter::new();
+        writer.write_u32(MAGIC).unwrap();
+        writer.write_utf16be("Test").unwrap();
+        writer.write_u32(MAX_FIELD_COUNT as u32).unwrap();
+        let pos = writer.offset();
+        let bytes = writer.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let mut reader = BufReader::new(&buf);
+        let err = parse_header(&mut reader).unwrap_err();
+        // MAX_FIELD_COUNT 이하이므로 TooManyFields가 아닌 UnexpectedEof여야 함
+        assert!(
+            matches!(err, OzError::UnexpectedEof { .. }),
+            "expected UnexpectedEof for exactly MAX_FIELD_COUNT with no field data, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_exception_error_code_zero() {
+        // 에러 코드 0인 경우
+        let mut writer = BufWriter::new();
+        writer.write_i32(0).unwrap();
+        let msg = "unknown error";
+        writer.write_u32(msg.len() as u32).unwrap();
+        for ch in msg.encode_utf16() {
+            writer.write_u16(ch).unwrap();
+        }
+        let buf = writer.into_bytes();
+        let mut reader = BufReader::new(&buf);
+        let err = parse_exception(&mut reader).unwrap();
+        assert!(matches!(err, OzError::ProtocolError { code: 0, .. }));
+    }
+
+    #[test]
+    fn test_parse_exception_large_positive_error_code() {
+        // 큰 양수 에러 코드
+        let mut writer = BufWriter::new();
+        writer.write_i32(10_801_001).unwrap();
+        let msg = "viewer error";
+        writer.write_u32(msg.len() as u32).unwrap();
+        for ch in msg.encode_utf16() {
+            writer.write_u16(ch).unwrap();
+        }
+        let buf = writer.into_bytes();
+        let mut reader = BufReader::new(&buf);
+        let err = parse_exception(&mut reader).unwrap();
+        assert!(matches!(
+            err,
+            OzError::ProtocolError {
+                code: 10_801_001,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_write_common_header_roundtrip_with_custom_auth() {
+        // 커스텀 인증 정보로 write → parse 왕복 테스트
+        let buf = build_header_with_auth("oz.TestClass", "admin_user", "p@ssw0rd!", "sess_abc");
+        let mut reader = BufReader::new(&buf);
+        let header = parse_header(&mut reader).unwrap();
+
+        assert_eq!(header.magic, MAGIC);
+        assert_eq!(header.class_name, "oz.TestClass");
+        assert_eq!(header.get_field("un"), Some("admin_user"));
+        assert_eq!(header.get_field("p"), Some("p@ssw0rd!"));
+        assert_eq!(header.session_id(), Some("sess_abc"));
+        assert_eq!(header.get_field("cv"), Some(CLIENT_VERSION));
+        assert_eq!(header.get_field("d"), Some(FIELD_D_DEFAULT));
+        assert_eq!(header.get_field("r"), Some(FIELD_R_DEFAULT));
+        assert_eq!(header.get_field("rv"), Some(FIELD_RV_DEFAULT));
+    }
 }

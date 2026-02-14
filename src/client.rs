@@ -701,4 +701,124 @@ mod tests {
         let err = client.send(&req).await.unwrap_err();
         assert!(matches!(err, OzError::NotAuthenticated));
     }
+
+    // ── §5 SessionState 스레드 안전성 및 상태 전이 테스트 ──
+
+    /// 여러 스레드에서 동시에 session_id를 읽어도 안전한지 검증
+    #[test]
+    fn test_session_state_concurrent_reads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let client = Arc::new(OzClient::new("https://example.com/oz70", "guest", "guest").unwrap());
+        client.set_session_id("concurrent_session");
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let c = Arc::clone(&client);
+                thread::spawn(move || {
+                    assert_eq!(c.session_id(), "concurrent_session");
+                    assert!(c.is_authenticated());
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    /// 한 스레드에서 쓰고 다른 스레드에서 읽는 동시성 검증
+    #[test]
+    fn test_session_state_concurrent_write_read() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let client = Arc::new(OzClient::new("https://example.com/oz70", "guest", "guest").unwrap());
+
+        let writer = {
+            let c = Arc::clone(&client);
+            thread::spawn(move || {
+                c.set_session_id("new_session_42");
+            })
+        };
+
+        writer.join().unwrap();
+
+        // writer가 완료된 후 session_id가 업데이트되었는지 확인
+        assert_eq!(client.session_id(), "new_session_42");
+        assert!(client.is_authenticated());
+    }
+
+    /// 세션 상태 전이: 초기 → 인증 → 재인증
+    #[test]
+    fn test_session_state_transitions() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+
+        // 1. 초기 상태: 미인증
+        assert_eq!(client.session_id(), INITIAL_SESSION_ID);
+        assert!(!client.is_authenticated());
+
+        // 2. 인증 후
+        client.set_session_id("session_abc");
+        assert_eq!(client.session_id(), "session_abc");
+        assert!(client.is_authenticated());
+
+        // 3. 다른 세션으로 재인증
+        client.set_session_id("session_xyz");
+        assert_eq!(client.session_id(), "session_xyz");
+        assert!(client.is_authenticated());
+    }
+
+    /// INITIAL_SESSION_ID로 되돌리면 미인증 상태로 복귀
+    #[test]
+    fn test_session_state_revert_to_initial() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+
+        client.set_session_id("authenticated_session");
+        assert!(client.is_authenticated());
+
+        // INITIAL_SESSION_ID로 되돌림
+        client.set_session_id(INITIAL_SESSION_ID);
+        assert!(!client.is_authenticated());
+        assert_eq!(client.session_id(), INITIAL_SESSION_ID);
+    }
+
+    /// 빈 문자열 세션 ID → 인증 상태 (INITIAL_SESSION_ID와 다르므로)
+    #[test]
+    fn test_session_state_empty_string_is_authenticated() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        client.set_session_id("");
+        // 빈 문자열은 INITIAL_SESSION_ID("-1905")와 다르므로 인증으로 간주
+        assert!(client.is_authenticated());
+        assert_eq!(client.session_id(), "");
+    }
+
+    /// 여러 스레드에서 순차적으로 session_id를 갱신하는 스트레스 테스트
+    #[test]
+    fn test_session_state_sequential_updates_from_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let client = Arc::new(OzClient::new("https://example.com/oz70", "guest", "guest").unwrap());
+
+        for i in 0..20 {
+            let c = Arc::clone(&client);
+            let handle = thread::spawn(move || {
+                c.set_session_id(&format!("session_{i}"));
+            });
+            handle.join().unwrap();
+        }
+
+        // 마지막 업데이트가 반영되어야 함
+        assert_eq!(client.session_id(), "session_19");
+        assert!(client.is_authenticated());
+    }
+
+    /// OzClient가 Send + Sync인지 컴파일 타임 검증
+    #[test]
+    fn test_oz_client_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<OzClient>();
+    }
 }

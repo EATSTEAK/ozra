@@ -1205,4 +1205,234 @@ mod tests {
         assert_eq!(header.class_name, CompactDataModuleRequest::CLASS_NAME);
         assert_eq!(header.get_field("s"), Some("sess42"));
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // §5 테스트 커버리지 강화 — 빈 응답, 경계값, 라운드트립
+    // ══════════════════════════════════════════════════════════════
+
+    /// DataModule 응답에서 그룹은 있지만 레코드가 0건인 경우의 바이너리를 생성합니다.
+    fn build_empty_data_module_response() -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4096);
+
+        // === 헤더 ===
+        buf.extend_from_slice(&MAGIC.to_be_bytes());
+        let class_name = "EmptyDataModule";
+        let u16_units: Vec<u16> = class_name.encode_utf16().collect();
+        buf.extend_from_slice(&(u16_units.len() as u32).to_be_bytes());
+        for u in &u16_units {
+            buf.extend_from_slice(&u.to_be_bytes());
+        }
+        buf.extend_from_slice(&0u32.to_be_bytes()); // 0 fields
+
+        // === 페이로드 헤더 ===
+        buf.extend_from_slice(&0i32.to_be_bytes()); // payload_size
+        buf.extend_from_slice(&0i32.to_be_bytes()); // unknown1
+        buf.push(0x01); // version_byte
+
+        // === TTk 헤더 ===
+        buf.extend_from_slice(&17i32.to_be_bytes()); // version
+        let prefix = DATA_MODULE_PREFIX;
+        buf.extend_from_slice(&(prefix.len() as u16).to_be_bytes());
+        buf.extend_from_slice(prefix.as_bytes());
+        buf.extend_from_slice(&2040i32.to_be_bytes()); // data_version
+        buf.extend_from_slice(&0i32.to_be_bytes()); // unknown2
+        buf.extend_from_slice(&0i32.to_be_bytes()); // unknown3
+
+        // === 그룹 메타데이터 ===
+        buf.extend_from_slice(&1i16.to_be_bytes()); // group_count = 1
+
+        // Group: "EmptyGroup" with 1 VarChar field but 0 rows
+        let group_name = "EmptyGroup";
+        buf.extend_from_slice(&(group_name.len() as u16).to_be_bytes());
+        buf.extend_from_slice(group_name.as_bytes());
+        let type_name = "ByteArraySet";
+        buf.extend_from_slice(&(type_name.len() as u16).to_be_bytes());
+        buf.extend_from_slice(type_name.as_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes()); // subtype = ""
+
+        // 주 필드 1개 (VarChar "NAME")
+        buf.extend_from_slice(&1i32.to_be_bytes()); // field_count1
+        buf.extend_from_slice(&1i32.to_be_bytes()); // kind = Normal
+        buf.extend_from_slice(&12i32.to_be_bytes()); // sql_type = VarChar
+        let fname = "NAME";
+        buf.extend_from_slice(&(fname.len() as u16).to_be_bytes());
+        buf.extend_from_slice(fname.as_bytes());
+        buf.push(0x01); // nullable
+
+        // 보조 필드 0개
+        buf.extend_from_slice(&0i32.to_be_bytes());
+
+        // 데이터셋 1개, 0행
+        buf.extend_from_slice(&1i32.to_be_bytes()); // ds_count
+        buf.extend_from_slice(&0i32.to_be_bytes()); // byte_size
+        buf.extend_from_slice(&0i32.to_be_bytes()); // row_count = 0
+        let dk = "ds0";
+        buf.extend_from_slice(&(dk.len() as u16).to_be_bytes());
+        buf.extend_from_slice(dk.as_bytes());
+
+        // === total_data_size ===
+        buf.extend_from_slice(&0i32.to_be_bytes());
+
+        // RecordInfo 0건 → 데이터 blob도 0
+
+        buf
+    }
+
+    #[test]
+    fn test_parse_empty_data_module_response() {
+        // 레코드 0건인 응답에서 정상적으로 빈 벡터를 반환하는지 검증
+        let buf = build_empty_data_module_response();
+        let response = parse_data_module(&buf).unwrap();
+
+        assert_eq!(response.header.class_name, "EmptyDataModule");
+        assert_eq!(response.meta.group_count, 1);
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].name, "EmptyGroup");
+        assert_eq!(response.groups[0].fields.len(), 1);
+        assert_eq!(response.groups[0].datasets[0].row_count, 0);
+
+        // datasets에 그룹은 있지만 행이 없어야 함
+        assert_eq!(response.datasets.len(), 1);
+        let (group_name, rows) = &response.datasets[0];
+        assert_eq!(group_name, "EmptyGroup");
+        assert!(rows.is_empty(), "0-record response should yield empty rows");
+    }
+
+    #[test]
+    fn test_parse_data_module_exception_response() {
+        // ExceptionMessage 클래스명 포함 시 Err(ProtocolError) 반환
+        let mut buf = Vec::with_capacity(256);
+
+        buf.extend_from_slice(&MAGIC.to_be_bytes());
+        let cn = "oz.framework.OZCPExceptionMessage";
+        let units: Vec<u16> = cn.encode_utf16().collect();
+        buf.extend_from_slice(&(units.len() as u32).to_be_bytes());
+        for u in &units {
+            buf.extend_from_slice(&u.to_be_bytes());
+        }
+        buf.extend_from_slice(&0u32.to_be_bytes()); // 0 fields
+
+        // 에러 코드 + 메시지
+        buf.extend_from_slice(&(-100i32).to_be_bytes());
+        let msg = "test exception";
+        let msg_units: Vec<u16> = msg.encode_utf16().collect();
+        buf.extend_from_slice(&(msg_units.len() as u32).to_be_bytes());
+        for u in &msg_units {
+            buf.extend_from_slice(&u.to_be_bytes());
+        }
+
+        let err = parse_data_module(&buf).unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { code: -100, .. }));
+        assert!(err.to_string().contains("test exception"));
+    }
+
+    #[test]
+    fn test_data_module_request_no_params() {
+        // 파라미터 0개인 DataModuleRequest 빌드
+        let params: Vec<(String, String)> = vec![];
+        let buf = build_dm("empty.odi", "/EMPTY", &params, "sess0");
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+
+        let mut reader = BufReader::new(&buf);
+        let header = parse_header(&mut reader).unwrap();
+        assert_eq!(header.class_name, DataModuleRequest::CLASS_NAME);
+        assert_eq!(header.get_field("s"), Some("sess0"));
+
+        // payload
+        let _type_marker = reader.read_u32().unwrap();
+        let odi = reader.read_utf16be().unwrap();
+        assert_eq!(odi, "empty.odi");
+        let _sub_magic = reader.read_u32().unwrap();
+        let cat = reader.read_utf16be().unwrap();
+        assert_eq!(cat, "/EMPTY");
+        let _b1 = reader.read_u8().unwrap();
+        let _b2 = reader.read_u8().unwrap();
+        let _dpk = reader.read_utf16be().unwrap();
+        let param_count = reader.read_u32().unwrap();
+        assert_eq!(param_count, 0);
+    }
+
+    #[test]
+    fn test_data_module_request_trailing_constants() {
+        assert_eq!(DataModuleRequest::TRAILING_CONST_1, 2);
+        assert_eq!(DataModuleRequest::TRAILING_CONST_2, 0x20);
+        assert_eq!(DataModuleRequest::TRAILING_CONST_3, 0x11);
+    }
+
+    #[test]
+    fn test_parse_dataset_group_multiple_datasets() {
+        // 하나의 그룹에 데이터셋 여러 개
+        let mut w = BufWriter::new();
+        w.write_utf("MultiDS").unwrap();
+        w.write_utf("ByteArraySet").unwrap();
+        w.write_utf("").unwrap();
+
+        // 필드 1개
+        w.write_i32(1).unwrap();
+        w.write_i32(1).unwrap(); // Normal
+        w.write_i32(4).unwrap(); // Integer
+        w.write_utf("ID").unwrap();
+        w.write_bool(false).unwrap();
+
+        // 보조 필드 0개
+        w.write_i32(0).unwrap();
+
+        // 데이터셋 3개
+        w.write_i32(3).unwrap();
+        for i in 0..3 {
+            w.write_i32(100 * (i + 1)).unwrap(); // byte_size
+            w.write_i32(i + 1).unwrap(); // row_count
+            let key = format!("ds{}", i);
+            w.write_utf(&key).unwrap();
+        }
+
+        let data: Vec<u8> = w.as_bytes()[..w.offset()].to_vec();
+        let mut reader = BufReader::new(&data);
+
+        let group = parse_dataset_group(&mut reader).unwrap();
+        assert_eq!(group.name, "MultiDS");
+        assert_eq!(group.datasets.len(), 3);
+        assert_eq!(group.datasets[0].row_count, 1);
+        assert_eq!(group.datasets[1].row_count, 2);
+        assert_eq!(group.datasets[2].row_count, 3);
+        assert_eq!(group.datasets[0].key, "ds0");
+        assert_eq!(group.datasets[1].key, "ds1");
+        assert_eq!(group.datasets[2].key, "ds2");
+    }
+
+    #[test]
+    fn test_parse_basic_field_normal_not_nullable() {
+        let mut w = BufWriter::new();
+        w.write_i32(1).unwrap(); // Normal
+        w.write_i32(4).unwrap(); // Integer
+        w.write_utf("NOT_NULL_FIELD").unwrap();
+        w.write_bool(false).unwrap(); // not nullable
+
+        let data: Vec<u8> = w.as_bytes()[..w.offset()].to_vec();
+        let mut reader = BufReader::new(&data);
+
+        let field = parse_basic_field(&mut reader).unwrap();
+        assert_eq!(field.kind, FieldKind::Normal);
+        assert_eq!(field.sql_type, SqlType::Integer);
+        assert_eq!(field.name, "NOT_NULL_FIELD");
+        assert!(!field.nullable);
+        assert!(field.parsing_code.is_none());
+    }
+
+    #[test]
+    fn test_compact_data_module_request_korean_params() {
+        // 한글 ODI명/카테고리 처리
+        let buf = build_compact_dm("보고서.odi", "/한글", "세션123");
+        let mut reader = BufReader::new(&buf);
+        let header = parse_header(&mut reader).unwrap();
+        assert_eq!(header.class_name, CompactDataModuleRequest::CLASS_NAME);
+        assert_eq!(header.get_field("s"), Some("세션123"));
+
+        let _type_marker = reader.read_u32().unwrap();
+        let odi = reader.read_utf16be().unwrap();
+        assert_eq!(odi, "보고서.odi");
+        let _sub_magic = reader.read_u32().unwrap();
+        let cat = reader.read_utf16be().unwrap();
+        assert_eq!(cat, "/한글");
+    }
 }

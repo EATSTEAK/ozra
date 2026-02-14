@@ -1993,4 +1993,163 @@ mod tests {
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("field count mismatch"));
     }
+
+    // ── §5 경계값 테스트 ─────────────────────────────────
+
+    /// Integer i32::MAX — null sentinel(i32::MIN)과 가장 먼 경계
+    #[test]
+    fn test_integer_boundary_i32_max() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(i32::MAX));
+    }
+
+    /// Integer i32::MIN + 1 — null sentinel 바로 옆 경계값
+    #[test]
+    fn test_integer_boundary_i32_min_plus_one() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(i32::MIN + 1));
+    }
+
+    /// Integer i32::MAX - 1 — 최대값 근처
+    #[test]
+    fn test_integer_boundary_i32_max_minus_one() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(i32::MAX - 1));
+    }
+
+    /// Integer -1 — 음수 일반값
+    #[test]
+    fn test_integer_negative_one() {
+        assert_roundtrip(SqlType::Integer, &FieldValue::Int(-1));
+    }
+
+    /// VarChar 빈 문자열 — null이 아닌 빈 문자열 라운드트립
+    #[test]
+    fn test_varchar_empty_string_roundtrip() {
+        assert_roundtrip(SqlType::VarChar, &FieldValue::String("".to_string()));
+    }
+
+    /// BigInt i64::MAX 경계값
+    #[test]
+    fn test_bigint_boundary_i64_max() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Long(i64::MAX));
+    }
+
+    /// BigInt i64::MIN + 1 — 최소값 근처 (i64::MIN은 일반값으로 사용 가능)
+    #[test]
+    fn test_bigint_boundary_i64_min_plus_one() {
+        assert_roundtrip(SqlType::BigInt, &FieldValue::Long(i64::MIN + 1));
+    }
+
+    /// DateTime 경계 — null sentinel 바로 옆 값 (hi=i32::MIN, lo=1)
+    #[test]
+    fn test_datetime_boundary_near_null_sentinel() {
+        // null sentinel: hi == i32::MIN && lo == 0
+        // hi=i32::MIN, lo=1 → null이 아님
+        let millis: i64 = ((i32::MIN as i64) << 32) | 1;
+        assert_roundtrip(SqlType::Date, &FieldValue::DateTime(millis));
+    }
+
+    /// DateTime 0 (epoch) — null이 아닌 정상값
+    #[test]
+    fn test_datetime_epoch_zero_roundtrip() {
+        assert_roundtrip(SqlType::Timestamp, &FieldValue::DateTime(0));
+    }
+
+    /// Binary read에서 MAX_BINARY_LENGTH 초과 시 BinaryTooLarge 에러
+    #[test]
+    fn test_read_binary_too_large() {
+        let mut w = BufWriter::new();
+        // MAX_BINARY_LENGTH + 1 크기의 length prefix를 기록
+        let too_large = (MAX_BINARY_LENGTH + 1) as i32;
+        w.write_i32(too_large).unwrap();
+        let buf = w.into_bytes();
+        let mut reader = BufReader::new(&buf);
+        let err = read_field_value(&mut reader, SqlType::Binary).unwrap_err();
+        match err {
+            OzError::BinaryTooLarge { length, max } => {
+                assert_eq!(length, MAX_BINARY_LENGTH + 1);
+                assert_eq!(max, MAX_BINARY_LENGTH);
+            }
+            other => panic!("expected BinaryTooLarge, got: {other:?}"),
+        }
+    }
+
+    /// Binary write에서 MAX_BINARY_LENGTH 초과 시 BinaryTooLarge 에러
+    #[test]
+    fn test_write_binary_too_large() {
+        // 실제로 100MB 할당하지 않고, BufWriter의 한계를 우회하여 검증
+        // write_field_value는 data.len()을 검사하므로 큰 Vec을 만들어야 함
+        // → 대신 길이만 검증하는 방식으로 테스트
+        let huge = vec![0u8; MAX_BINARY_LENGTH + 1];
+        let mut w = BufWriter::new();
+        let err = write_field_value(&mut w, SqlType::VarBinary, &FieldValue::Binary(huge));
+        assert!(err.is_err());
+        match err.unwrap_err() {
+            OzError::BinaryTooLarge { length, max } => {
+                assert_eq!(length, MAX_BINARY_LENGTH + 1);
+                assert_eq!(max, MAX_BINARY_LENGTH);
+            }
+            other => panic!("expected BinaryTooLarge, got: {other:?}"),
+        }
+    }
+
+    /// Binary 정확히 MAX_BINARY_LENGTH — 경계 허용
+    #[test]
+    fn test_binary_exactly_max_length_read() {
+        // read 쪽: length prefix가 정확히 MAX_BINARY_LENGTH → BinaryTooLarge가 아님
+        // (실제 데이터가 부족하면 EOF가 발생하지만, 길이 검증 자체는 통과해야 함)
+        let mut w = BufWriter::new();
+        w.write_i32(MAX_BINARY_LENGTH as i32).unwrap();
+        let buf = w.into_bytes();
+        let mut reader = BufReader::new(&buf);
+        let err = read_field_value(&mut reader, SqlType::Binary);
+        // 데이터 부족으로 EOF 에러가 나지만, BinaryTooLarge는 아니어야 함
+        match err {
+            Err(OzError::BinaryTooLarge { .. }) => {
+                panic!("should not be BinaryTooLarge for exactly max length")
+            }
+            Err(OzError::UnexpectedEof { .. }) => {} // 예상대로 EOF
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    /// Numeric/Decimal 빈 문자열 → Null 라운드트립
+    #[test]
+    fn test_numeric_empty_string_is_null_roundtrip() {
+        // write Null → empty UTF → read → Null
+        let mut w = BufWriter::new();
+        write_field_value(&mut w, SqlType::Numeric, &FieldValue::Null).unwrap();
+        let buf = w.into_bytes();
+        let mut reader = BufReader::new(&buf);
+        let v = read_field_value(&mut reader, SqlType::Numeric).unwrap();
+        assert_eq!(v, FieldValue::Null);
+    }
+
+    /// 모든 SQL 타입의 Null 라운드트립 (Bit 제외 — Bit은 null 없음)
+    #[test]
+    fn test_all_nullable_types_null_roundtrip() {
+        let nullable_types = [
+            SqlType::Integer,
+            SqlType::TinyInt,
+            SqlType::SmallInt,
+            SqlType::BigInt,
+            SqlType::Real,
+            SqlType::Float,
+            SqlType::Double,
+            SqlType::Char,
+            SqlType::VarChar,
+            SqlType::LongVarChar,
+            SqlType::Clob,
+            SqlType::Numeric,
+            SqlType::Decimal,
+            SqlType::Date,
+            SqlType::Time,
+            SqlType::Timestamp,
+            SqlType::Binary,
+            SqlType::VarBinary,
+            SqlType::LongVarBinary,
+            SqlType::Blob,
+        ];
+        for sql_type in nullable_types {
+            assert_roundtrip(sql_type, &FieldValue::Null);
+        }
+    }
 }
