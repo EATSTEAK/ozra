@@ -30,6 +30,9 @@ pub const REQUEST_FRAME_SIZE: usize = 9545;
 /// DataModule 타입 마커 (`Kn.OVe` = 380 = 0x17C)
 pub const DATA_MODULE_TYPE_MARKER: u32 = 0x0000_017C;
 
+/// CompactDataModule 타입 마커 (`Kn.C3L` = 382 = 0x17E)
+pub const COMPACT_DATA_MODULE_TYPE_MARKER: u32 = 0x0000_017E;
+
 /// UserLogin 트레일링 마커 (0xB0 = 176)
 pub const LOGIN_TRAILING_MARKER: u32 = 0x0000_00B0;
 

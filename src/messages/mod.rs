@@ -52,6 +52,7 @@ pub use common::{
 
 // Message type re-exports
 pub use data_module::{
+    CompactDataModuleRequest, build_compact_data_module_request,
     DataModuleRequest, build_data_module_request, parse_basic_field, parse_data_module,
     parse_dataset_group,
 };

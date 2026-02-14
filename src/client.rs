@@ -38,7 +38,7 @@ use reqwest::Client;
 use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
 use crate::error::{OzError, Result};
 use crate::messages::{
-    DataModuleRequest, LoginRequest, LoginResponse, OzRequest, OzRequestResponse, OzResponse,
+    CompactDataModuleRequest, DataModuleRequest, LoginRequest, LoginResponse, OzRequest, OzRequestResponse, OzResponse,
     RepositoryRequest, TransactionDataSet, TransactionRequest, TransactionResponse,
     check_error_result,
 };
@@ -379,6 +379,33 @@ impl OzClient {
         self.send(&req).await
     }
 
+    /// DataModule 데이터를 간결 요청(서브타입 382)으로 조회합니다.
+    ///
+    /// [`fetch_data_module`](Self::fetch_data_module)과 동일한 응답을 반환하지만,
+    /// 파라미터 없이 간결한 요청을 전송합니다.
+    /// 서버가 파라미터 없이 데이터를 반환할 수 있는 경우에 사용하세요.
+    ///
+    /// # 인자
+    ///
+    /// - `odi_name`: ODI 파일명 (예: `"report_name.odi"`)
+    /// - `category`: 카테고리 (예: `"/CM"`)
+    ///
+    /// # 에러
+    ///
+    /// - [`OzError::NotAuthenticated`] — 로그인되지 않은 상태
+    /// - `send`에서 발생 가능한 모든 에러
+    pub async fn fetch_data_module_compact(
+        &self,
+        odi_name: &str,
+        category: &str,
+    ) -> Result<DataModuleResponse> {
+        let req = CompactDataModuleRequest {
+            odi_name: odi_name.to_string(),
+            category: category.to_string(),
+        };
+        self.send(&req).await
+    }
+
     /// 트랜잭션을 실행합니다 (파라미터만, 데이터셋 없음).
     ///
     /// 내부적으로 [`send`](Self::send)를 사용하여 [`TransactionRequest`]를 전송하고,
@@ -450,7 +477,7 @@ mod tests {
     use super::*;
     use crate::constants::{INITIAL_SESSION_ID, REQUEST_FRAME_SIZE};
     use crate::messages::{
-        build_data_module_request, build_login_request, build_repository_request,
+        build_compact_data_module_request, build_data_module_request, build_login_request, build_repository_request,
     };
 
     #[test]
@@ -601,6 +628,45 @@ mod tests {
             odi_name: "test.odi".to_string(),
             category: "/CM".to_string(),
             params: vec![("arg1".to_string(), "val".to_string())],
+        };
+        let err = client.send(&req).await.unwrap_err();
+        assert!(matches!(err, OzError::NotAuthenticated));
+    }
+
+    #[test]
+    fn test_compact_data_module_request_builds_correctly() {
+        let req = CompactDataModuleRequest {
+            odi_name: "test.odi".to_string(),
+            category: "/CM".to_string(),
+        };
+        let buf = req.build("12345").unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_compact_data_module_request_compat_builds_correctly() {
+        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    /// fetch_data_module_compact는 인증 전에 NotAuthenticated를 반환해야 함
+    #[tokio::test]
+    async fn test_fetch_data_module_compact_not_authenticated() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        let err = client
+            .fetch_data_module_compact("test.odi", "/CM")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OzError::NotAuthenticated));
+    }
+
+    /// send with CompactDataModuleRequest는 인증 전에 NotAuthenticated를 반환해야 함
+    #[tokio::test]
+    async fn test_send_compact_data_module_not_authenticated() {
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        let req = CompactDataModuleRequest {
+            odi_name: "test.odi".to_string(),
+            category: "/CM".to_string(),
         };
         let err = client.send(&req).await.unwrap_err();
         assert!(matches!(err, OzError::NotAuthenticated));

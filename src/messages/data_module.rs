@@ -96,6 +96,63 @@ impl OzRequest for DataModuleRequest {
     }
 }
 
+/// CompactDataModule 요청 (서브타입 382, `Kn.C3L`)
+///
+/// [`DataModuleRequest`](380)의 간결 버전으로, 파라미터·플래그·trailing constants를 생략합니다.
+/// 서버 응답 형식은 380과 동일한 [`DataModuleResponse`]입니다.
+///
+/// # 380 vs 382 차이
+///
+/// | 필드               | 380 (기본) | 382 (간결) |
+/// |--------------------|-----------|-----------|
+/// | odi_name           | ✅         | ✅         |
+/// | sub_magic (iwc)    | ✅         | ✅         |
+/// | category (YKU)     | ✅         | ✅         |
+/// | T1E 플래그         | ✅         | ❌         |
+/// | w0J 압축 플래그    | ✅         | ✅ (조건부) |
+/// | DPk 추가 정보      | ✅ (조건부)| ❌         |
+/// | 파라미터 맵        | ✅ (조건부)| ❌         |
+/// | trailing constants | ✅         | ❌         |
+///
+/// # 페이로드 구조
+///
+/// ```text
+/// TYPE_MARKER (0x17E = 382)
+/// UTF-16BE(odi_name)
+/// u32(SUB_MAGIC = 0x2710)
+/// UTF-16BE(category)
+/// u8(0x00)  // w0J = false (서버 버전 >= 20050126일 때)
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompactDataModuleRequest {
+    /// ODI 파일명 (예: `"report.odi"`)
+    pub odi_name: String,
+    /// 카테고리 (예: `"/CM"`)
+    pub category: String,
+}
+
+impl CompactDataModuleRequest {
+    /// DataModule 요청 관련 상수 (380과 동일)
+    pub const SUB_MAGIC: u32 = 0x2710;
+}
+
+impl OzRequest for CompactDataModuleRequest {
+    const CLASS_NAME: &'static str = "oz.framework.cp.message.FrameworkRequestDataModule";
+    const TYPE_MARKER: Option<u32> = Some(0x17E);
+
+    fn write_payload(&self, writer: &mut BufWriter) -> Result<()> {
+        writer.write_utf16be(&self.odi_name)?;
+        writer.write_u32(Self::SUB_MAGIC)?;
+        writer.write_utf16be(&self.category)?;
+        writer.write_u8(0x00)?; // w0J = false (서버 버전 >= 20050126)
+        Ok(())
+    }
+}
+
+impl OzRequestResponse for CompactDataModuleRequest {
+    type Response = DataModuleResponse;
+}
+
 impl OzResponse for DataModuleResponse {
     const CLASS_NAME: &'static str = "DataModule";
 
@@ -349,11 +406,37 @@ pub fn build_data_module_request(
     req.build(session_id)
 }
 
+/// CompactDataModule 요청 바이너리를 빌드합니다.
+///
+/// [`CompactDataModuleRequest`]의 편의 래퍼입니다.
+/// 파라미터가 필요 없는 경우 380 대신 382를 사용하면 페이로드가 더 작습니다.
+///
+/// # 예시
+///
+/// ```
+/// use ozra::messages::data_module::build_compact_data_module_request;
+/// use ozra::constants::REQUEST_FRAME_SIZE;
+///
+/// let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+/// assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+/// ```
+pub fn build_compact_data_module_request(
+    odi_name: &str,
+    category: &str,
+    session_id: &str,
+) -> Result<Vec<u8>> {
+    let req = CompactDataModuleRequest {
+        odi_name: odi_name.to_string(),
+        category: category.to_string(),
+    };
+    req.build(session_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constants::{
-        DATA_MODULE_PREFIX, DATA_MODULE_TYPE_MARKER, MAGIC, REQUEST_FRAME_SIZE, SUB_MAGIC,
+        COMPACT_DATA_MODULE_TYPE_MARKER, DATA_MODULE_PREFIX, DATA_MODULE_TYPE_MARKER, MAGIC, REQUEST_FRAME_SIZE, SUB_MAGIC,
     };
     use crate::messages::common::parse_header;
     use crate::types::FieldValue;
@@ -1004,5 +1087,111 @@ mod tests {
 
         let err = parse_data_module(&buf).unwrap_err();
         assert!(matches!(err, OzError::UnexpectedEof { .. }));
+    }
+
+    // ==================== CompactDataModuleRequest (382) 테스트 ====================
+
+    #[test]
+    fn test_compact_data_module_request_class_name() {
+        assert_eq!(
+            CompactDataModuleRequest::CLASS_NAME,
+            "oz.framework.cp.message.FrameworkRequestDataModule"
+        );
+        // 380과 동일한 클래스명
+        assert_eq!(
+            CompactDataModuleRequest::CLASS_NAME,
+            DataModuleRequest::CLASS_NAME
+        );
+    }
+
+    #[test]
+    fn test_compact_data_module_request_type_marker() {
+        assert_eq!(CompactDataModuleRequest::TYPE_MARKER, Some(0x17E));
+        // 380(0x17C)과 다른 마커
+        assert_ne!(
+            CompactDataModuleRequest::TYPE_MARKER,
+            DataModuleRequest::TYPE_MARKER
+        );
+    }
+
+    #[test]
+    fn test_build_compact_data_module_request_size() {
+        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        assert_eq!(buf.len(), REQUEST_FRAME_SIZE);
+    }
+
+    #[test]
+    fn test_build_compact_data_module_request_class_name() {
+        let buf = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+        let mut reader = BufReader::new(&buf);
+        let _magic = reader.read_u32().unwrap();
+        let class_name = reader.read_utf16be().unwrap();
+        assert_eq!(class_name, CompactDataModuleRequest::CLASS_NAME);
+    }
+
+    #[test]
+    fn test_build_compact_data_module_request_payload() {
+        let buf = build_compact_data_module_request("report.odi", "/CM", "sess1").unwrap();
+        let mut reader = BufReader::new(&buf);
+        let _header = parse_header(&mut reader).unwrap();
+
+        // Type marker = 382 (0x17E)
+        let type_marker = reader.read_u32().unwrap();
+        assert_eq!(type_marker, COMPACT_DATA_MODULE_TYPE_MARKER);
+
+        // odi_name
+        let odi_name = reader.read_utf16be().unwrap();
+        assert_eq!(odi_name, "report.odi");
+
+        // sub_magic
+        let sub_magic = reader.read_u32().unwrap();
+        assert_eq!(sub_magic, SUB_MAGIC);
+
+        // category
+        let category = reader.read_utf16be().unwrap();
+        assert_eq!(category, "/CM");
+
+        // w0J = false
+        let w0j = reader.read_u8().unwrap();
+        assert_eq!(w0j, 0);
+
+        // 382에는 trailing constants가 없으므로, 이후 바이트는 모두 0 패딩이어야 함
+        let remaining = &buf[reader.offset()..];
+        assert!(
+            remaining.iter().all(|&b| b == 0),
+            "382 페이로드 이후 바이트는 모두 0 패딩이어야 합니다"
+        );
+    }
+
+    #[test]
+    fn test_compact_vs_standard_payload_size() {
+        // 382(compact)는 380(standard)보다 페이로드가 작아야 합니다.
+        // 프레임 크기는 동일하지만, 의미 있는 바이트(non-zero)가 더 적습니다.
+        let params = vec![("arg1".to_string(), "2026".to_string())];
+        let standard = build_data_module_request("test.odi", "/CM", &params, "12345").unwrap();
+        let compact = build_compact_data_module_request("test.odi", "/CM", "12345").unwrap();
+
+        // 프레임 크기는 동일
+        assert_eq!(standard.len(), compact.len());
+        assert_eq!(standard.len(), REQUEST_FRAME_SIZE);
+
+        // compact의 non-zero 바이트가 standard보다 적어야 함
+        let standard_nonzero = standard.iter().filter(|&&b| b != 0).count();
+        let compact_nonzero = compact.iter().filter(|&&b| b != 0).count();
+        assert!(
+            compact_nonzero < standard_nonzero,
+            "compact({}) should have fewer non-zero bytes than standard({})",
+            compact_nonzero,
+            standard_nonzero
+        );
+    }
+
+    #[test]
+    fn test_compact_roundtrip_header() {
+        let buf = build_compact_data_module_request("report.odi", "/CM", "sess42").unwrap();
+        let mut reader = BufReader::new(&buf);
+        let header = parse_header(&mut reader).unwrap();
+        assert_eq!(header.class_name, CompactDataModuleRequest::CLASS_NAME);
+        assert_eq!(header.get_field("s"), Some("sess42"));
     }
 }
