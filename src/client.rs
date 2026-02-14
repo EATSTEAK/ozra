@@ -33,6 +33,8 @@
 //! println!("Datasets: {}", dm_resp.datasets.len());
 //! ```
 
+use std::sync::RwLock;
+
 use reqwest::Client;
 
 use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
@@ -43,6 +45,26 @@ use crate::messages::{
     TransactionResponse, check_error_result,
 };
 use crate::types::DataModuleResponse;
+
+/// 세션 상태 (원자적 관리)
+///
+/// OZ 프로토콜 세션 ID를 캡슐화하여 `RwLock`으로 보호합니다.
+/// 멀티스레드 환경에서 안전한 세션 상태 관리를 보장합니다.
+struct SessionState {
+    session_id: String,
+}
+
+impl SessionState {
+    fn new() -> Self {
+        Self {
+            session_id: INITIAL_SESSION_ID.to_string(),
+        }
+    }
+
+    fn is_authenticated(&self) -> bool {
+        self.session_id != INITIAL_SESSION_ID
+    }
+}
 
 /// OZ 서버 HTTP 클라이언트
 ///
@@ -55,7 +77,7 @@ use crate::types::DataModuleResponse;
 /// use ozra::client::OzClient;
 ///
 /// # async fn example() -> ozra::Result<()> {
-/// let mut client = OzClient::new(
+/// let client = OzClient::new(
 ///     "https://example.com/oz70",
 ///     "guest",
 ///     "guest",
@@ -71,8 +93,8 @@ pub struct OzClient {
     http: Client,
     /// 서버 기본 URL (예: `"https://example.com/oz70"`)
     base_url: String,
-    /// OZ 프로토콜 세션 ID (`"-1905"` → 서버 발급 ID)
-    session_id: String,
+    /// OZ 프로토콜 세션 상태 (`RwLock`으로 보호)
+    session: RwLock<SessionState>,
     /// 로그인 사용자명
     username: String,
     /// 로그인 비밀번호
@@ -97,20 +119,22 @@ impl OzClient {
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            session_id: INITIAL_SESSION_ID.to_string(),
+            session: RwLock::new(SessionState::new()),
             username: username.to_string(),
             password: password.to_string(),
         })
     }
 
     /// 현재 OZ 프로토콜 세션 ID를 반환합니다.
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    ///
+    /// `RwLock` guard의 수명 제약으로 `String`을 반환합니다.
+    pub fn session_id(&self) -> String {
+        self.session.read().unwrap().session_id.clone()
     }
 
     /// 인증 여부를 확인합니다 (세션 ID가 초기값이 아닌지).
     pub fn is_authenticated(&self) -> bool {
-        self.session_id != INITIAL_SESSION_ID
+        self.session.read().unwrap().is_authenticated()
     }
 
     /// 세션을 초기화합니다 — `GET {base_url}/ozView.jsp`로 JSESSIONID 쿠키를 획득합니다.
@@ -294,7 +318,8 @@ impl OzClient {
             return Err(OzError::NotAuthenticated);
         }
 
-        let req_buf = request.build(&self.session_id)?;
+        let session_id = self.session.read().unwrap().session_id.clone();
+        let req_buf = request.build(&session_id)?;
         let resp_buf = self.send_request(req_buf).await?;
         R::Response::parse(&resp_buf)
     }
@@ -311,20 +336,22 @@ impl OzClient {
     ///
     /// - [`OzError::LoginFailed`] — 세션 ID가 여전히 `"-1905"`인 경우
     /// - `send_request`에서 발생 가능한 모든 에러
-    pub async fn login(&mut self) -> Result<LoginResponse> {
+    pub async fn login(&self) -> Result<LoginResponse> {
         let req = LoginRequest::new(&self.username, &self.password);
-        let req_buf = req.build(&self.session_id)?;
+        let session_id = self.session.read().unwrap().session_id.clone();
+        let req_buf = req.build(&session_id)?;
         let resp_buf = self.send_request(req_buf).await?;
         let response = LoginResponse::parse(&resp_buf)?;
 
         if let Some(sid) = response.header.session_id() {
-            self.session_id = sid.to_string();
+            self.session.write().unwrap().session_id = sid.to_string();
         }
 
         // NOTE: If session ID is still the initial value, login has failed
-        if self.session_id == INITIAL_SESSION_ID {
+        let current_session_id = self.session.read().unwrap().session_id.clone();
+        if current_session_id == INITIAL_SESSION_ID {
             return Err(OzError::LoginFailed {
-                session_id: self.session_id.clone(),
+                session_id: current_session_id,
             });
         }
 
@@ -470,6 +497,12 @@ impl OzClient {
         };
         self.send(&req).await
     }
+
+    /// 테스트용 세션 ID 설정 메서드
+    #[cfg(test)]
+    fn set_session_id(&self, session_id: &str) {
+        self.session.write().unwrap().session_id = session_id.to_string();
+    }
 }
 
 #[cfg(test)]
@@ -513,8 +546,8 @@ mod tests {
 
     #[test]
     fn test_is_authenticated_true_after_session_update() {
-        let mut client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
-        client.session_id = "abc123".to_string();
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        client.set_session_id("abc123");
         assert!(client.is_authenticated());
     }
 
@@ -583,10 +616,10 @@ mod tests {
 
     #[test]
     fn test_multiple_clients_independent() {
-        let mut client1 = OzClient::new("https://server1.com/oz70", "guest", "guest").unwrap();
+        let client1 = OzClient::new("https://server1.com/oz70", "guest", "guest").unwrap();
         let client2 = OzClient::new("https://server2.com/oz70", "guest", "guest").unwrap();
 
-        client1.session_id = "sess_1".to_string();
+        client1.set_session_id("sess_1");
         assert!(client1.is_authenticated());
         assert!(!client2.is_authenticated());
         assert_eq!(client2.session_id(), INITIAL_SESSION_ID);
