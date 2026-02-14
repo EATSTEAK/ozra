@@ -20,7 +20,8 @@
 //! // Repository 파일 다운로드
 //! let repo_req = RepositoryRequest::new("/CM/report.ozr");
 //! let repo_resp = client.send(&repo_req).await?;
-//! println!("Downloaded {} bytes", repo_resp.data.len());
+//! let bytes = repo_resp.into_data();
+//! println!("Downloaded {} bytes", bytes.len());
 //!
 //! // DataModule 쿼리
 //! let dm_req = DataModuleRequest {
@@ -346,7 +347,7 @@ impl OzClient {
     pub async fn fetch_repository(&self, path: &str) -> Result<Vec<u8>> {
         let req = RepositoryRequest::new(path);
         let resp = self.send(&req).await?;
-        Ok(resp.data)
+        Ok(resp.into_data())
     }
 
     /// DataModule 데이터를 조회합니다.

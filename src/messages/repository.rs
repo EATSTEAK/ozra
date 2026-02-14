@@ -151,7 +151,7 @@ impl RepositoryContentType {
 /// - [`path`](Self::path): 요청한 파일 경로
 /// - [`content_type`](Self::content_type): 파일 확장자 기반 컨텐츠 타입
 /// - [`content`](Self::content): 파일 바이너리 데이터
-/// - [`size`](Self::size): 컨텐츠 크기 (바이트)
+/// - [`size`](Self::size): 응답에서 받은 원본 바이트 크기 (GZIP 압축 해제 전 크기)
 /// - [`compressed`](Self::compressed): 압축 여부
 /// - [`metadata`](Self::metadata): 서버 메타데이터 (키-값 쌍)
 #[derive(Debug, Clone)]
@@ -162,7 +162,11 @@ pub struct RepositoryItem {
     pub content_type: RepositoryContentType,
     /// 파일 컨텐츠 (raw bytes)
     pub content: Vec<u8>,
-    /// 파일 크기 (bytes)
+    /// 응답에서 받은 원본 바이트 크기 (GZIP 압축 해제 전 크기).
+    ///
+    /// 압축된 응답의 경우 이 값은 압축된 상태의 바이트 수를 나타내며,
+    /// `content`의 실제 길이와 동일합니다. 압축 해제 후의 크기는
+    /// 별도로 계산해야 합니다.
     pub size: usize,
     /// 압축 여부
     pub compressed: bool,
@@ -280,31 +284,37 @@ impl OzRequest for RepositoryRequest {
 ///
 /// 서버가 반환한 리포지토리 파일 데이터입니다.
 ///
-/// ## 하위 호환성
+/// ## 데이터 접근
 ///
-/// [`data`](Self::data) 필드는 raw 바이트를 그대로 포함하여 기존 코드와의 호환성을 유지합니다.
-/// [`status`](Self::status)와 [`item`](Self::item) 필드는 구조화된 응답 데이터를 제공합니다.
+/// 파일 데이터는 메모리 중복을 피하기 위해 단일 위치에 저장됩니다:
+///
+/// - **`item`이 존재할 때**: 파일 바이트는 `item.content`에 저장되며,
+///   `data` 필드는 빈 Vec입니다. [`into_data()`](Self::into_data)로 소유권을 이전하세요.
+/// - **`item`이 없을 때** (Error 상태 등): 남은 바이트가 `data` 필드에 저장됩니다.
 ///
 /// ## 예시
 ///
 /// ```ignore
 /// let response: RepositoryResponse = client.send(&req).await?;
 ///
-/// // 기존 방식: raw 바이트 접근
-/// println!("Raw data: {} bytes", response.data.len());
-///
-/// // 새로운 방식: 구조화된 접근
+/// // 구조화된 접근 (권장)
 /// if response.status == RepositoryStatus::Complete {
 ///     if let Some(item) = &response.item {
-///         println!("File: {}, type: {:?}", item.path, item.content_type);
+///         println!("File: {}, type: {:?}, size: {}", item.path, item.content_type, item.content.len());
 ///     }
 /// }
+///
+/// // 소유권 이전
+/// let bytes: Vec<u8> = response.into_data();
 /// ```
 #[derive(Debug, Clone)]
 pub struct RepositoryResponse {
     /// 응답 메시지 헤더
     pub header: OzMessageHeader,
-    /// 파일 데이터 (raw 바이트) — 기존 호환성 유지
+    /// 남은 raw 바이트 — Error 상태 등 `item`이 없는 경우에만 사용됩니다.
+    ///
+    /// `item`이 존재할 때 이 필드는 빈 Vec입니다.
+    /// 파일 데이터에 접근하려면 `item.content` 또는 [`into_data()`](Self::into_data)를 사용하세요.
     pub data: Vec<u8>,
     /// 파일 상태
     pub status: RepositoryStatus,
@@ -312,11 +322,47 @@ pub struct RepositoryResponse {
     pub item: Option<RepositoryItem>,
 }
 
+impl RepositoryResponse {
+    /// 파일 데이터의 소유권을 이전하여 반환합니다.
+    ///
+    /// `item`이 존재하면 `item.content`를, 그렇지 않으면 `data` 필드를 반환합니다.
+    pub fn into_data(self) -> Vec<u8> {
+        if let Some(item) = self.item {
+            item.content
+        } else {
+            self.data
+        }
+    }
+
+    /// 요청 경로를 기반으로 `RepositoryItem`의 `content_type`과 `path`를 설정합니다.
+    ///
+    /// `parse_payload` 시점에는 요청 경로 정보가 없으므로, 호출자가 이 메서드로
+    /// 후처리할 수 있습니다.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// let resp = RepositoryResponse::parse(&buf)?
+    ///     .with_path("/CM/report.ozr");
+    /// assert_eq!(resp.item.unwrap().content_type, RepositoryContentType::Report);
+    /// ```
+    pub fn with_path(mut self, path: &str) -> Self {
+        if let Some(ref mut item) = self.item {
+            item.path = path.to_string();
+            item.content_type = RepositoryContentType::from_path(path);
+        }
+        self
+    }
+}
+
 impl OzResponse for RepositoryResponse {
     const CLASS_NAME: &'static str = "OZRepositoryResponseItem";
 
     fn parse_payload(reader: &mut BufReader, header: OzMessageHeader) -> Result<Self> {
-        // 빈 응답: 페이로드가 없으면 기본값으로 반환
+        // 빈 응답: 페이로드가 없으면 기본값으로 반환.
+        // OZ 프로토콜 문서에는 빈 페이로드에 대한 명시적 정의가 없으므로,
+        // 방어적으로 Ready 상태(기본값)를 반환합니다. 실제 서버에서는
+        // Loading 폴링 중 빈 응답이 관찰된 바 있습니다.
         if reader.remaining() == 0 {
             return Ok(Self {
                 header,
@@ -359,25 +405,31 @@ impl OzResponse for RepositoryResponse {
         }
 
         // ③ RepositoryItem 구성
-        let item = if !data.is_empty() {
+        //    data를 item.content로 move하여 메모리 이중 보관을 방지합니다.
+        //    RepositoryResponse.data는 빈 Vec이 되며, 파일 데이터는
+        //    item.content 또는 into_data()를 통해 접근합니다.
+        let (data_field, item) = if !data.is_empty() {
             // GZIP 매직 바이트(0x1f, 0x8b)로 압축 여부 감지
             let compressed = data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+            let size = data.len();
 
-            Some(RepositoryItem {
-                path: String::new(), // 경로는 요청 컨텍스트에서 제공
+            let item = RepositoryItem {
+                path: String::new(), // 경로는 요청 컨텍스트에서 with_path()를 통해 설정
                 content_type: RepositoryContentType::Unknown,
-                content: data.clone(),
-                size: data.len(),
+                content: data, // move — clone 없이 소유권 이전
+                size,
                 compressed,
                 metadata: header.fields.clone(),
-            })
+            };
+
+            (Vec::new(), Some(item))
         } else {
-            None
+            (data, None)
         };
 
         Ok(Self {
             header,
-            data,
+            data: data_field,
             status,
             item,
         })
@@ -774,14 +826,19 @@ mod tests {
 
         let resp = RepositoryResponse::parse(&buf).unwrap();
         assert_eq!(resp.status, RepositoryStatus::Complete);
-        assert_eq!(resp.data, file_data);
+        // data 필드는 빈 Vec (파일 데이터는 item.content에 저장)
+        assert!(resp.data.is_empty());
         assert!(resp.item.is_some());
 
-        let item = resp.item.unwrap();
+        let item = resp.item.as_ref().unwrap();
         assert_eq!(item.content, file_data);
         assert_eq!(item.size, 6);
         assert!(!item.compressed);
         assert_eq!(item.content_type, RepositoryContentType::Unknown);
+
+        // into_data()로 소유권 이전
+        let data = resp.into_data();
+        assert_eq!(data, file_data);
     }
 
     #[test]
@@ -791,8 +848,10 @@ mod tests {
 
         let resp = RepositoryResponse::parse(&buf).unwrap();
         assert_eq!(resp.status, RepositoryStatus::Ready);
-        assert_eq!(resp.data, file_data);
+        // data 필드는 빈 Vec (파일 데이터는 item.content에 저장)
+        assert!(resp.data.is_empty());
         assert!(resp.item.is_some());
+        assert_eq!(resp.item.as_ref().unwrap().content, file_data);
     }
 
     #[test]
@@ -855,9 +914,12 @@ mod tests {
         assert_eq!(resp.status, RepositoryStatus::Complete);
         assert!(resp.item.is_some());
 
-        let item = resp.item.unwrap();
+        let item = resp.item.as_ref().unwrap();
         assert!(item.compressed);
         assert_eq!(item.content, gzip_data);
+
+        // into_data로도 동일한 데이터 반환
+        assert_eq!(resp.into_data(), gzip_data);
     }
 
     #[test]
@@ -920,8 +982,50 @@ mod tests {
 
         let resp = RepositoryResponse::parse(&buf).unwrap();
         assert_eq!(resp.status, RepositoryStatus::Complete);
-        assert_eq!(resp.data.len(), 10240);
-        assert_eq!(resp.data, large_data);
+        // data 필드는 빈 Vec (파일 데이터는 item.content에 저장)
+        assert!(resp.data.is_empty());
+        let item = resp.item.as_ref().unwrap();
+        assert_eq!(item.content.len(), 10240);
+        assert_eq!(item.content, large_data);
+    }
+
+    #[test]
+    fn test_with_path_sets_content_type_and_path() {
+        let file_data = vec![0x01, 0x02];
+        let buf = build_test_repo_response(2, &file_data, &[]);
+
+        let resp = RepositoryResponse::parse(&buf)
+            .unwrap()
+            .with_path("/CM/report.ozr");
+        let item = resp.item.as_ref().unwrap();
+        assert_eq!(item.path, "/CM/report.ozr");
+        assert_eq!(item.content_type, RepositoryContentType::Report);
+    }
+
+    #[test]
+    fn test_with_path_no_item() {
+        // item이 없는 경우 with_path는 아무것도 하지 않음
+        let buf = build_test_repo_response(-1, &[], &[]);
+        let resp = RepositoryResponse::parse(&buf)
+            .unwrap()
+            .with_path("/CM/report.ozr");
+        assert!(resp.item.is_none());
+    }
+
+    #[test]
+    fn test_into_data_with_item() {
+        let file_data = vec![0xCA, 0xFE];
+        let buf = build_test_repo_response(2, &file_data, &[]);
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.into_data(), file_data);
+    }
+
+    #[test]
+    fn test_into_data_without_item() {
+        // Error 상태: data 필드에 바이트가 있고 item은 None
+        let buf = build_test_repo_response(-1, &[0xFF], &[]);
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.into_data(), vec![0xFF]);
     }
 
     #[test]

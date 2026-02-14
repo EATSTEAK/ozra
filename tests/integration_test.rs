@@ -537,8 +537,9 @@ async fn live_fetch_syllabus() {
     // Step 2: .ozr 다운로드 (send 제네릭 메서드 사용)
     let repo_req = RepositoryRequest::new("/CM/zcm_get_abeek_plan_2018_new.ozr");
     let repo_resp = client.send(&repo_req).await.expect("fetch .ozr failed");
-    assert!(!repo_resp.data.is_empty(), ".ozr data should not be empty");
-    println!(".ozr size: {} bytes", repo_resp.data.len());
+    let ozr_bytes = repo_resp.into_data();
+    assert!(!ozr_bytes.is_empty(), ".ozr data should not be empty");
+    println!(".ozr size: {} bytes", ozr_bytes.len());
 
     // Step 2b: .ozr 다운로드 (편의 메서드)
     let ozr_data = client
