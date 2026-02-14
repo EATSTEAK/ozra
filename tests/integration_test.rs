@@ -118,7 +118,7 @@ fn roundtrip_login_then_parse_trailing_marker() {
     assert_eq!(header.get_field("un"), Some("admin"));
     assert_eq!(header.get_field("p"), Some("password123"));
 
-    // trailing marker (LOGIN_TRAILING_MARKER = 0xB0)
+    // trailing marker (LoginRequest::TRAILING_MARKER = 0xB0)
     let marker = reader.read_u32().unwrap();
     assert_eq!(marker, 0xB0);
 }
@@ -158,7 +158,7 @@ fn roundtrip_data_module_payload_verification() {
 
     // DataModule payload 순서 검증
     let type_marker = reader.read_u32().unwrap();
-    assert_eq!(type_marker, 0x17C); // DATA_MODULE_TYPE_MARKER
+    assert_eq!(type_marker, 0x17C); // DataModuleRequest::TYPE_MARKER
     let odi = reader.read_utf16be().unwrap();
     assert_eq!(odi, "test.odi");
     let sub_magic = reader.read_u32().unwrap();
