@@ -13,8 +13,8 @@ use crate::error::OzError;
 /// 필드 클래스 매핑:
 /// - **BasicStringField**: [`Char`](Self::Char), [`VarChar`](Self::VarChar), [`LongVarChar`](Self::LongVarChar), [`Clob`](Self::Clob)
 /// - **BasicStringField2** (boolean prefix 없음): [`Numeric`](Self::Numeric), [`Decimal`](Self::Decimal)
-/// - **BasicSmallField** (4B, sentinel null): [`TinyInt`](Self::TinyInt), [`SmallInt`](Self::SmallInt)
-/// - **BasicIntField** (bool + 4B): [`Integer`](Self::Integer)
+/// - **BasicIntField** (4B, sentinel null): [`Integer`](Self::Integer), [`TinyInt`](Self::TinyInt)
+/// - **BasicSmallField** (bool + 4B): [`SmallInt`](Self::SmallInt)
 /// - **BasicLongField** (bool + 8B): [`BigInt`](Self::BigInt)
 /// - **BasicFloatField** (bool + 4B): [`Real`](Self::Real)
 /// - **BasicDoubleField** (bool + 8B): [`Float`](Self::Float), [`Double`](Self::Double)
