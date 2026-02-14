@@ -37,6 +37,7 @@ pub mod codec;
 pub mod constants;
 pub mod error;
 pub mod field;
+pub mod gzip;
 pub mod messages;
 pub mod types;
 pub mod wire;

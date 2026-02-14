@@ -30,6 +30,7 @@
 //! ```
 
 use crate::error::{OzError, Result};
+use crate::gzip;
 use crate::messages::traits::{OzRequest, OzRequestResponse, OzResponse};
 use crate::types::OzMessageHeader;
 use crate::wire::{BufReader, BufWriter};
@@ -353,6 +354,120 @@ impl RepositoryResponse {
         }
         self
     }
+
+    /// 응답 데이터가 GZIP 블록 압축되어 있으면 해제하여 반환합니다.
+    ///
+    /// [`RepositoryItem`]의 `compressed` 플래그와 데이터 구조를 검사하여:
+    /// - GZIP 블록 스트림이면 블록 단위로 해제
+    /// - 단일 GZIP 스트림이면 일반 GZIP 해제
+    /// - 압축되지 않은 데이터이면 그대로 반환
+    ///
+    /// # 반환
+    ///
+    /// 압축 해제된 데이터의 복사본을 반환합니다. 원본은 변경되지 않습니다.
+    ///
+    /// # 에러
+    ///
+    /// GZIP 해제에 실패하면 [`OzError::DecompressionError`]를 반환합니다.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// let resp: RepositoryResponse = client.send(&req).await?;
+    /// let content = resp.decompressed_content()?;
+    /// ```
+    pub fn decompressed_content(&self) -> Result<Vec<u8>> {
+        let content = if let Some(ref item) = self.item {
+            &item.content
+        } else {
+            &self.data
+        };
+
+        if content.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // GZIP 블록 스트림 감지 (4B 크기 헤더 + GZIP 매직)
+        if gzip::is_gzip_blocked(content) {
+            return gzip::decode_gzip_blocked(content)
+                .map_err(|_| OzError::DecompressionError);
+        }
+
+        // 단일 GZIP 스트림 감지 (매직 바이트 0x1f 0x8b)
+        if content.len() >= 2 && content[0] == 0x1f && content[1] == 0x8b {
+            use flate2::read::GzDecoder;
+            use std::io::Read;
+
+            let mut decoder = GzDecoder::new(content.as_slice());
+            let mut decompressed = Vec::new();
+            decoder
+                .read_to_end(&mut decompressed)
+                .map_err(|_| OzError::DecompressionError)?;
+            return Ok(decompressed);
+        }
+
+        // 압축되지 않은 데이터 — 그대로 반환
+        Ok(content.clone())
+    }
+
+    /// 응답 데이터가 GZIP 압축되어 있으면 내부에서 해제합니다.
+    ///
+    /// [`decompressed_content()`](Self::decompressed_content)와 달리, 이 메서드는 `self`를
+    /// 변경하여 `item.content`를 압축 해제된 데이터로 교체하고
+    /// `item.compressed`를 `false`로 설정합니다.
+    ///
+    /// # 에러
+    ///
+    /// GZIP 해제에 실패하면 [`OzError::DecompressionError`]를 반환합니다.
+    /// 실패 시 원본 데이터는 변경되지 않습니다.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// let mut resp: RepositoryResponse = client.send(&req).await?;
+    /// resp.decompress()?;
+    /// // 이제 resp.item.content에 압축 해제된 데이터가 있음
+    /// ```
+    pub fn decompress(&mut self) -> Result<()> {
+        if let Some(ref mut item) = self.item {
+            if !item.compressed {
+                return Ok(());
+            }
+
+            let decompressed = self_decompressed_content(&item.content)?;
+            item.content = decompressed;
+            item.compressed = false;
+        }
+        Ok(())
+    }
+}
+
+/// `decompress()` 내부 헬퍼 — 데이터를 압축 해제합니다.
+fn self_decompressed_content(content: &[u8]) -> Result<Vec<u8>> {
+    if content.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // GZIP 블록 스트림 감지
+    if gzip::is_gzip_blocked(content) {
+        return gzip::decode_gzip_blocked(content).map_err(|_| OzError::DecompressionError);
+    }
+
+    // 단일 GZIP 스트림 감지
+    if content.len() >= 2 && content[0] == 0x1f && content[1] == 0x8b {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut decoder = GzDecoder::new(content);
+        let mut decompressed = Vec::new();
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|_| OzError::DecompressionError)?;
+        return Ok(decompressed);
+    }
+
+    // 압축되지 않은 데이터
+    Ok(content.to_vec())
 }
 
 impl OzResponse for RepositoryResponse {
