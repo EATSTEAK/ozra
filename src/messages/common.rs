@@ -314,10 +314,7 @@ fn parse_error_fields(buf: &[u8]) -> Option<(i32, String)> {
         Ok((error_code, msg))
     })();
 
-    match result {
-        Ok(fields) => Some(fields),
-        Err(_) => Some((-1, "OZ Error (unparseable)".to_string())),
-    }
+    Some(result.unwrap_or_else(|_| (-1, "unparseable error response".to_string())))
 }
 
 /// 응답 바이너리에서 에러를 감지합니다.
