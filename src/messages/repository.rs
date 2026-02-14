@@ -316,7 +316,31 @@ impl OzResponse for RepositoryResponse {
     const CLASS_NAME: &'static str = "OZRepositoryResponseItem";
 
     fn parse_payload(reader: &mut BufReader, header: OzMessageHeader) -> Result<Self> {
-        // Repository 응답은 헤더 이후의 나머지를 raw 바이트로 가져옴
+        // 빈 응답: 페이로드가 없으면 기본값으로 반환
+        if reader.remaining() == 0 {
+            return Ok(Self {
+                header,
+                data: Vec::new(),
+                status: RepositoryStatus::Ready,
+                item: None,
+            });
+        }
+
+        // 상태 코드 최소 4바이트 필요
+        if reader.remaining() < 4 {
+            return Err(OzError::RepositoryParseError {
+                detail: format!(
+                    "insufficient bytes for status: need 4, have {}",
+                    reader.remaining()
+                ),
+            });
+        }
+
+        // ① RepositoryStatus 파싱 (i32)
+        let status_raw = reader.read_i32()?;
+        let status = RepositoryStatus::try_from(status_raw)?;
+
+        // ② 나머지 바이트 → 파일 바이너리 데이터
         let remaining = reader.remaining();
         let data = if remaining > 0 {
             reader.read_bytes(remaining)?.to_vec()
@@ -324,13 +348,38 @@ impl OzResponse for RepositoryResponse {
             Vec::new()
         };
 
-        // 현재는 raw 파싱만 수행; status와 item은 기본값
-        // 추후 parse_repository_response에서 구조화된 파싱 구현 예정
+        // Error 상태이면 item 없이 반환 (data에는 남은 바이트 유지)
+        if status == RepositoryStatus::Error {
+            return Ok(Self {
+                header,
+                data,
+                status,
+                item: None,
+            });
+        }
+
+        // ③ RepositoryItem 구성
+        let item = if !data.is_empty() {
+            // GZIP 매직 바이트(0x1f, 0x8b)로 압축 여부 감지
+            let compressed = data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b;
+
+            Some(RepositoryItem {
+                path: String::new(), // 경로는 요청 컨텍스트에서 제공
+                content_type: RepositoryContentType::Unknown,
+                content: data.clone(),
+                size: data.len(),
+                compressed,
+                metadata: header.fields.clone(),
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             header,
             data,
-            status: RepositoryStatus::default(),
-            item: None,
+            status,
+            item,
         })
     }
 }
@@ -360,7 +409,7 @@ pub fn build_repository_request(path: &str, session_id: &str) -> Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{REPO_HEADER_MARKER, REQUEST_FRAME_SIZE};
+    use crate::constants::{MAGIC, REPO_HEADER_MARKER, REQUEST_FRAME_SIZE};
     use crate::messages::common::parse_header;
 
     // -- RepositoryRequest tests --
@@ -666,5 +715,271 @@ mod tests {
     #[test]
     fn test_repository_response_class_name() {
         assert_eq!(RepositoryResponse::CLASS_NAME, "OZRepositoryResponseItem");
+    }
+
+    // -- parse_payload tests --
+
+    /// 테스트용 Repository 응답 바이너리를 생성하는 헬퍼
+    ///
+    /// 구조: Magic + ClassName(UTF-16BE) + FieldCount + Fields + Status(i32) + FileData
+    fn build_test_repo_response(status: i32, file_data: &[u8], fields: &[(&str, &str)]) -> Vec<u8> {
+        let mut w = BufWriter::new();
+        // 헤더
+        w.write_u32(MAGIC).unwrap();
+        w.write_utf16be("oz.framework.cp.message.repositoryex.OZRepositoryResponseItem")
+            .unwrap();
+        w.write_u32(fields.len() as u32).unwrap();
+        for (k, v) in fields {
+            w.write_utf16be(k).unwrap();
+            w.write_utf16be(v).unwrap();
+        }
+        // 페이로드: status + file data
+        w.write_i32(status).unwrap();
+        // 파일 데이터를 직접 기록
+        for &b in file_data {
+            w.write_u8(b).unwrap();
+        }
+        let pos = w.offset();
+        let bytes = w.into_bytes();
+        bytes[..pos].to_vec()
+    }
+
+    /// 테스트용 에러 응답 바이너리를 생성하는 헬퍼
+    fn build_test_exception_response(error_code: i32, message: &str) -> Vec<u8> {
+        let mut w = BufWriter::new();
+        w.write_u32(MAGIC).unwrap();
+        w.write_utf16be("oz.framework.cp.message.OZCPExceptionMessage")
+            .unwrap();
+        // parse_header가 field_count를 읽으므로 0으로 설정
+        w.write_u32(0).unwrap();
+        // 에러 코드
+        w.write_i32(error_code).unwrap();
+        // 메시지 길이 (문자 수)
+        let u16_units: Vec<u16> = message.encode_utf16().collect();
+        w.write_u32(u16_units.len() as u32).unwrap();
+        // 메시지 (UTF-16BE)
+        for ch in &u16_units {
+            w.write_u16(*ch).unwrap();
+        }
+        let pos = w.offset();
+        let bytes = w.into_bytes();
+        bytes[..pos].to_vec()
+    }
+
+    #[test]
+    fn test_parse_payload_complete_with_data() {
+        let file_data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+        let fields = vec![("s", "session123"), ("un", "guest")];
+        let buf = build_test_repo_response(2, &file_data, &fields); // status=2 (Complete)
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Complete);
+        assert_eq!(resp.data, file_data);
+        assert!(resp.item.is_some());
+
+        let item = resp.item.unwrap();
+        assert_eq!(item.content, file_data);
+        assert_eq!(item.size, 6);
+        assert!(!item.compressed);
+        assert_eq!(item.content_type, RepositoryContentType::Unknown);
+    }
+
+    #[test]
+    fn test_parse_payload_ready_status() {
+        let file_data = vec![0x01, 0x02, 0x03];
+        let buf = build_test_repo_response(0, &file_data, &[]); // status=0 (Ready)
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Ready);
+        assert_eq!(resp.data, file_data);
+        assert!(resp.item.is_some());
+    }
+
+    #[test]
+    fn test_parse_payload_loading_status() {
+        let buf = build_test_repo_response(1, &[], &[]); // status=1 (Loading), no data
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Loading);
+        assert!(resp.data.is_empty());
+        assert!(resp.item.is_none()); // 데이터가 없으므로 item 없음
+    }
+
+    #[test]
+    fn test_parse_payload_error_status() {
+        let buf = build_test_repo_response(-1, &[0xFF], &[]); // status=-1 (Error)
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Error);
+        // Error 상태에서는 item이 None
+        assert!(resp.item.is_none());
+        // data에는 나머지 바이트가 유지됨
+        assert_eq!(resp.data, vec![0xFF]);
+    }
+
+    #[test]
+    fn test_parse_payload_error_status_no_data() {
+        let buf = build_test_repo_response(-1, &[], &[]); // Error with no trailing data
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Error);
+        assert!(resp.item.is_none());
+        assert!(resp.data.is_empty());
+    }
+
+    #[test]
+    fn test_parse_payload_empty_response() {
+        // 헤더만 있고 페이로드가 전혀 없는 경우
+        let mut w = BufWriter::new();
+        w.write_u32(MAGIC).unwrap();
+        w.write_utf16be("oz.framework.cp.message.repositoryex.OZRepositoryResponseItem")
+            .unwrap();
+        w.write_u32(0).unwrap(); // 필드 0개
+        let pos = w.offset();
+        let bytes = w.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Ready);
+        assert!(resp.data.is_empty());
+        assert!(resp.item.is_none());
+    }
+
+    #[test]
+    fn test_parse_payload_gzip_detection() {
+        // GZIP 매직 바이트 (0x1f, 0x8b)로 시작하는 데이터
+        let gzip_data = vec![0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00];
+        let buf = build_test_repo_response(2, &gzip_data, &[]);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Complete);
+        assert!(resp.item.is_some());
+
+        let item = resp.item.unwrap();
+        assert!(item.compressed);
+        assert_eq!(item.content, gzip_data);
+    }
+
+    #[test]
+    fn test_parse_payload_non_gzip_data() {
+        // GZIP 아닌 일반 데이터
+        let data = vec![0x50, 0x4B, 0x03, 0x04]; // ZIP 매직, not GZIP
+        let buf = build_test_repo_response(2, &data, &[]);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        let item = resp.item.unwrap();
+        assert!(!item.compressed);
+    }
+
+    #[test]
+    fn test_parse_payload_single_byte_not_gzip() {
+        // 1바이트 데이터는 GZIP으로 감지되지 않아야 함
+        let data = vec![0x1f];
+        let buf = build_test_repo_response(2, &data, &[]);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        let item = resp.item.unwrap();
+        assert!(!item.compressed);
+    }
+
+    #[test]
+    fn test_parse_payload_metadata_propagation() {
+        let fields = vec![("s", "sess42"), ("un", "admin"), ("cv", "20140527")];
+        let data = vec![0xAB, 0xCD];
+        let buf = build_test_repo_response(2, &data, &fields);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        let item = resp.item.unwrap();
+        // 헤더 필드가 metadata로 전파되어야 함
+        assert_eq!(item.metadata.len(), 3);
+        assert!(item.metadata.iter().any(|(k, v)| k == "s" && v == "sess42"));
+        assert!(item.metadata.iter().any(|(k, v)| k == "un" && v == "admin"));
+    }
+
+    #[test]
+    fn test_parse_payload_large_file_data() {
+        // 큰 파일 데이터 — BufWriter는 9545B 제한이므로 Vec으로 수동 빌드
+        let large_data: Vec<u8> = (0..10240).map(|i| (i % 256) as u8).collect();
+
+        let mut buf = Vec::with_capacity(512 + large_data.len());
+        // Magic
+        buf.extend_from_slice(&MAGIC.to_be_bytes());
+        // ClassName (UTF-16BE)
+        let class_name = "oz.framework.cp.message.repositoryex.OZRepositoryResponseItem";
+        let u16_units: Vec<u16> = class_name.encode_utf16().collect();
+        buf.extend_from_slice(&(u16_units.len() as u32).to_be_bytes());
+        for u in &u16_units {
+            buf.extend_from_slice(&u.to_be_bytes());
+        }
+        // Field count = 0
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        // Status = 2 (Complete)
+        buf.extend_from_slice(&2i32.to_be_bytes());
+        // File data
+        buf.extend_from_slice(&large_data);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.status, RepositoryStatus::Complete);
+        assert_eq!(resp.data.len(), 10240);
+        assert_eq!(resp.data, large_data);
+    }
+
+    #[test]
+    fn test_parse_payload_unknown_status_code() {
+        let buf = build_test_repo_response(99, &[], &[]);
+
+        let err = RepositoryResponse::parse(&buf).unwrap_err();
+        assert!(matches!(
+            err,
+            OzError::UnknownRepositoryStatus { status: 99 }
+        ));
+    }
+
+    #[test]
+    fn test_parse_payload_insufficient_bytes_for_status() {
+        // 헤더 후 2바이트만 있는 경우 (status에 4바이트 필요)
+        let mut w = BufWriter::new();
+        w.write_u32(MAGIC).unwrap();
+        w.write_utf16be("oz.framework.cp.message.repositoryex.OZRepositoryResponseItem")
+            .unwrap();
+        w.write_u32(0).unwrap();
+        // status에 필요한 4바이트 중 2바이트만 기록
+        w.write_u8(0x00).unwrap();
+        w.write_u8(0x02).unwrap();
+        let pos = w.offset();
+        let bytes = w.into_bytes();
+        let buf = bytes[..pos].to_vec();
+
+        let err = RepositoryResponse::parse(&buf).unwrap_err();
+        assert!(matches!(err, OzError::RepositoryParseError { .. }));
+    }
+
+    #[test]
+    fn test_parse_exception_response() {
+        let buf = build_test_exception_response(-1, "file not found");
+
+        let err = RepositoryResponse::parse(&buf).unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { code: -1, .. }));
+        assert!(err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_parse_exception_response_korean_message() {
+        let buf = build_test_exception_response(-999, "파일을 찾을 수 없습니다");
+
+        let err = RepositoryResponse::parse(&buf).unwrap_err();
+        assert!(matches!(err, OzError::ProtocolError { code: -999, .. }));
+        assert!(err.to_string().contains("파일을 찾을 수 없습니다"));
+    }
+
+    #[test]
+    fn test_parse_complete_then_access_header() {
+        let fields = vec![("s", "my_session")];
+        let data = vec![0x01];
+        let buf = build_test_repo_response(2, &data, &fields);
+
+        let resp = RepositoryResponse::parse(&buf).unwrap();
+        assert_eq!(resp.header.get_field("s"), Some("my_session"));
+        assert!(resp.header.class_name.contains("OZRepositoryResponseItem"));
     }
 }
