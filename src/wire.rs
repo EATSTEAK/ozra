@@ -90,6 +90,16 @@ impl<'a> BufReader<'a> {
         Ok(v)
     }
 
+    /// 1바이트 부호 있는 정수를 읽습니다.
+    ///
+    /// TinyInt(`SqlType`) 등 signed byte 값 읽기에 사용됩니다.
+    pub fn read_i8(&mut self) -> Result<i8> {
+        self.ensure(1)?;
+        let v = self.buf[self.offset] as i8;
+        self.offset += 1;
+        Ok(v)
+    }
+
     /// 1바이트를 읽어 불리언으로 반환합니다 (`!= 0`이면 `true`).
     pub fn read_bool(&mut self) -> Result<bool> {
         Ok(self.read_u8()? != 0)
@@ -141,6 +151,25 @@ impl<'a> BufReader<'a> {
     pub fn read_i64(&mut self) -> Result<i64> {
         self.ensure(8)?;
         let v = i64::from_be_bytes([
+            self.buf[self.offset],
+            self.buf[self.offset + 1],
+            self.buf[self.offset + 2],
+            self.buf[self.offset + 3],
+            self.buf[self.offset + 4],
+            self.buf[self.offset + 5],
+            self.buf[self.offset + 6],
+            self.buf[self.offset + 7],
+        ]);
+        self.offset += 8;
+        Ok(v)
+    }
+
+    /// 8바이트 Big Endian 부호 없는 정수를 읽습니다.
+    ///
+    /// 대용량 바이너리 크기 읽기 등에 사용됩니다.
+    pub fn read_u64(&mut self) -> Result<u64> {
+        self.ensure(8)?;
+        let v = u64::from_be_bytes([
             self.buf[self.offset],
             self.buf[self.offset + 1],
             self.buf[self.offset + 2],
@@ -234,6 +263,19 @@ impl<'a> BufReader<'a> {
         let bytes = self.read_bytes(byte_len)?;
         decode_modified_utf8(bytes)
     }
+
+    /// OZ 확장 Modified UTF-8 문자열을 읽습니다.
+    ///
+    /// 형식: `[4B byteLength (i32)] + [byteLength × 1B Modified UTF-8]`
+    ///
+    /// 일반 [`read_utf()`](Self::read_utf)가 2바이트(u16) 길이 prefix를 사용하는 반면,
+    /// 이 메서드는 **4바이트(i32) 길이 prefix**를 사용합니다. 65,535 바이트를 초과하는
+    /// 긴 문자열을 처리할 때 사용됩니다.
+    pub fn read_oz_utf(&mut self) -> Result<String> {
+        let byte_len = self.read_i32()? as usize;
+        let bytes = self.read_bytes(byte_len)?;
+        decode_modified_utf8(bytes)
+    }
 }
 
 /// 고정 크기 버퍼에 순차적 Big Endian 바이너리 쓰기를 제공합니다.
@@ -287,6 +329,16 @@ impl BufWriter {
     pub fn write_u8(&mut self, v: u8) -> Result<()> {
         self.ensure(1)?;
         self.buf[self.offset] = v;
+        self.offset += 1;
+        Ok(())
+    }
+
+    /// 1바이트 부호 있는 정수를 씁니다.
+    ///
+    /// Transaction 파라미터 직렬화 등에 사용됩니다.
+    pub fn write_i8(&mut self, v: i8) -> Result<()> {
+        self.ensure(1)?;
+        self.buf[self.offset] = v as u8;
         self.offset += 1;
         Ok(())
     }
@@ -388,6 +440,40 @@ impl BufWriter {
         let len_bytes = (byte_len as u16).to_be_bytes();
         self.buf[self.offset..self.offset + 2].copy_from_slice(&len_bytes);
         self.offset += 2;
+
+        // UTF-8 바이트 기록
+        self.buf[self.offset..self.offset + byte_len].copy_from_slice(&utf8_bytes);
+        self.offset += byte_len;
+        Ok(())
+    }
+
+    /// OZ 확장 Modified UTF-8 문자열을 씁니다.
+    ///
+    /// 형식: `[4B byteLength (i32)] + [byteLength × 1B Modified UTF-8]`
+    ///
+    /// 일반 [`write_utf()`](Self::write_utf)가 2바이트(u16) 길이 prefix를 사용하는 반면,
+    /// 이 메서드는 **4바이트(i32) 길이 prefix**를 사용합니다. 65,535 바이트를 초과하는
+    /// 긴 문자열을 처리할 때 사용됩니다.
+    pub fn write_oz_utf(&mut self, s: &str) -> Result<()> {
+        // NOTE: Encodes null chars as 0xC0 0x80 for Modified UTF-8
+        let mut utf8_bytes = Vec::with_capacity(s.len());
+        for byte in s.as_bytes() {
+            if *byte == 0x00 {
+                utf8_bytes.push(0xC0);
+                utf8_bytes.push(0x80);
+            } else {
+                utf8_bytes.push(*byte);
+            }
+        }
+
+        let byte_len = utf8_bytes.len();
+        let total_needed = 4 + byte_len;
+        self.ensure(total_needed)?;
+
+        // byteLength 기록 (4B, i32)
+        let len_bytes = (byte_len as i32).to_be_bytes();
+        self.buf[self.offset..self.offset + 4].copy_from_slice(&len_bytes);
+        self.offset += 4;
 
         // UTF-8 바이트 기록
         self.buf[self.offset..self.offset + byte_len].copy_from_slice(&utf8_bytes);
@@ -1168,5 +1254,253 @@ mod tests {
         w.offset = REQUEST_FRAME_SIZE - 2;
         let err = w.write_bytes(&[0x00; 5]).unwrap_err();
         assert!(matches!(err, OzError::BufferOverflow { .. }));
+    }
+
+    // ── read_i8 / write_i8 tests ──
+
+    #[test]
+    fn read_i8_positive() {
+        let data = [0x42]; // 66 as i8
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_i8().unwrap(), 0x42);
+        assert_eq!(r.offset(), 1);
+    }
+
+    #[test]
+    fn read_i8_negative() {
+        let data = [0xFF]; // -1 as i8
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_i8().unwrap(), -1);
+    }
+
+    #[test]
+    fn read_i8_min_max() {
+        let data = [0x80, 0x7F]; // i8::MIN, i8::MAX
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_i8().unwrap(), i8::MIN);
+        assert_eq!(r.read_i8().unwrap(), i8::MAX);
+    }
+
+    #[test]
+    fn read_i8_eof() {
+        let data: [u8; 0] = [];
+        let mut r = BufReader::new(&data);
+        let err = r.read_i8().unwrap_err();
+        assert!(matches!(
+            err,
+            OzError::UnexpectedEof {
+                offset: 0,
+                needed: 1,
+                available: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn write_i8_positive() {
+        let mut w = BufWriter::new();
+        w.write_i8(42).unwrap();
+        assert_eq!(w.as_bytes()[0], 42);
+        assert_eq!(w.offset(), 1);
+    }
+
+    #[test]
+    fn write_i8_negative() {
+        let mut w = BufWriter::new();
+        w.write_i8(-1).unwrap();
+        assert_eq!(w.as_bytes()[0], 0xFF);
+        assert_eq!(w.offset(), 1);
+    }
+
+    #[test]
+    fn write_i8_overflow() {
+        let mut w = BufWriter::new();
+        w.offset = REQUEST_FRAME_SIZE;
+        let err = w.write_i8(0).unwrap_err();
+        assert!(matches!(err, OzError::BufferOverflow { needed: 1, .. }));
+    }
+
+    #[test]
+    fn roundtrip_i8() {
+        let mut w = BufWriter::new();
+        w.write_i8(-128).unwrap();
+        w.write_i8(0).unwrap();
+        w.write_i8(127).unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_i8().unwrap(), -128);
+        assert_eq!(r.read_i8().unwrap(), 0);
+        assert_eq!(r.read_i8().unwrap(), 127);
+    }
+
+    // ── read_u64 tests ──
+
+    #[test]
+    fn read_u64_basic() {
+        let data = 12345678901234u64.to_be_bytes();
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_u64().unwrap(), 12345678901234);
+    }
+
+    #[test]
+    fn read_u64_max() {
+        let data = u64::MAX.to_be_bytes();
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_u64().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn read_u64_zero() {
+        let data = 0u64.to_be_bytes();
+        let mut r = BufReader::new(&data);
+        assert_eq!(r.read_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn read_u64_eof() {
+        let data = [0x00; 4]; // 4 bytes, need 8
+        let mut r = BufReader::new(&data);
+        let err = r.read_u64().unwrap_err();
+        assert!(matches!(
+            err,
+            OzError::UnexpectedEof {
+                offset: 0,
+                needed: 8,
+                available: 4
+            }
+        ));
+    }
+
+    // ── write_oz_utf / read_oz_utf tests ──
+
+    #[test]
+    fn write_oz_utf_basic() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("hello").unwrap();
+        // 4B i32 길이 prefix + 5B 데이터
+        assert_eq!(&w.as_bytes()[..4], &5i32.to_be_bytes());
+        assert_eq!(&w.as_bytes()[4..9], b"hello");
+        assert_eq!(w.offset(), 9);
+    }
+
+    #[test]
+    fn write_oz_utf_empty() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("").unwrap();
+        assert_eq!(&w.as_bytes()[..4], &0i32.to_be_bytes());
+        assert_eq!(w.offset(), 4);
+    }
+
+    #[test]
+    fn write_oz_utf_korean() {
+        let mut w = BufWriter::new();
+        let s = "강의계획서";
+        let byte_len = s.len(); // 15 bytes in UTF-8
+        w.write_oz_utf(s).unwrap();
+        assert_eq!(&w.as_bytes()[..4], &(byte_len as i32).to_be_bytes());
+        assert_eq!(w.offset(), 4 + byte_len);
+    }
+
+    #[test]
+    fn write_oz_utf_null_char_modified_utf8() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("A\0B").unwrap();
+        // "A\0B" → 0x41, 0xC0, 0x80, 0x42 (4 bytes in Modified UTF-8)
+        assert_eq!(&w.as_bytes()[..4], &4i32.to_be_bytes()); // byteLen = 4
+        assert_eq!(&w.as_bytes()[4..8], &[0x41, 0xC0, 0x80, 0x42]);
+        assert_eq!(w.offset(), 8);
+    }
+
+    #[test]
+    fn write_oz_utf_overflow() {
+        let mut w = BufWriter::new();
+        w.offset = REQUEST_FRAME_SIZE - 3; // 3 bytes left, need 4 + 5 = 9
+        let err = w.write_oz_utf("hello").unwrap_err();
+        assert!(matches!(err, OzError::BufferOverflow { .. }));
+    }
+
+    #[test]
+    fn read_oz_utf_basic() {
+        let s = "hello";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(s.len() as i32).to_be_bytes());
+        buf.extend_from_slice(s.as_bytes());
+        let mut r = BufReader::new(&buf);
+        assert_eq!(r.read_oz_utf().unwrap(), "hello");
+    }
+
+    #[test]
+    fn read_oz_utf_korean() {
+        let s = "강의계획서";
+        let bytes = s.as_bytes();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+        buf.extend_from_slice(bytes);
+        let mut r = BufReader::new(&buf);
+        assert_eq!(r.read_oz_utf().unwrap(), "강의계획서");
+    }
+
+    #[test]
+    fn read_oz_utf_empty() {
+        let buf = 0i32.to_be_bytes(); // byteLen = 0
+        let mut r = BufReader::new(&buf);
+        assert_eq!(r.read_oz_utf().unwrap(), "");
+    }
+
+    #[test]
+    fn read_oz_utf_null_char_modified_utf8() {
+        let mut buf = Vec::new();
+        let payload = [0x41, 0xC0, 0x80, 0x42]; // "A\0B"
+        buf.extend_from_slice(&(payload.len() as i32).to_be_bytes());
+        buf.extend_from_slice(&payload);
+        let mut r = BufReader::new(&buf);
+        let result = r.read_oz_utf().unwrap();
+        assert_eq!(result, "A\0B");
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn read_oz_utf_truncated_data_eof() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&10i32.to_be_bytes()); // byteLen = 10
+        buf.extend_from_slice(b"hello"); // 5바이트만
+        let mut r = BufReader::new(&buf);
+        let err = r.read_oz_utf().unwrap_err();
+        assert!(matches!(err, OzError::UnexpectedEof { .. }));
+    }
+
+    #[test]
+    fn roundtrip_oz_utf_basic() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("OZBINDEDDATAMODULE").unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_oz_utf().unwrap(), "OZBINDEDDATAMODULE");
+    }
+
+    #[test]
+    fn roundtrip_oz_utf_korean() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("강의계획서").unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_oz_utf().unwrap(), "강의계획서");
+    }
+
+    #[test]
+    fn roundtrip_oz_utf_with_null() {
+        let mut w = BufWriter::new();
+        w.write_oz_utf("A\0B").unwrap();
+        let mut r = BufReader::new(w.as_bytes());
+        assert_eq!(r.read_oz_utf().unwrap(), "A\0B");
+    }
+
+    #[test]
+    fn oz_utf_uses_4byte_prefix_vs_utf_2byte_prefix() {
+        // write_utf는 2바이트 prefix, write_oz_utf는 4바이트 prefix
+        let mut w1 = BufWriter::new();
+        w1.write_utf("test").unwrap();
+        assert_eq!(w1.offset(), 2 + 4); // 2B prefix + 4B data
+
+        let mut w2 = BufWriter::new();
+        w2.write_oz_utf("test").unwrap();
+        assert_eq!(w2.offset(), 4 + 4); // 4B prefix + 4B data
     }
 }
