@@ -371,7 +371,7 @@ pub type DataSet = (String, Vec<Row>);
 
 /// 서버로부터 받은 DataModule 응답의 **전체 파싱 결과**
 ///
-/// [`parse_data_module`](crate::codec::parse_data_module)의 반환 타입으로,
+/// [`parse_data_module`](crate::messages::data_module::parse_data_module)의 반환 타입으로,
 /// OZ 프로토콜의 4개 계층을 모두 포함합니다:
 ///
 /// ## 프로토콜 계층

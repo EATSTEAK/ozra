@@ -13,7 +13,6 @@
 //! - [`wire`] — 저수준 바이너리 I/O ([`BufReader`](wire::BufReader), [`BufWriter`](wire::BufWriter))
 //! - [`field`] — SQL 타입별 필드 값 디코딩 ([`read_field_value`](field::read_field_value), [`read_row`](field::read_row))
 //! - [`messages`] — 메시지 추상화 (trait 기반 요청/응답 + 빌더/파서)
-//! - [`codec`] — 호환성 래퍼 ([`messages`] 모듈로의 re-export)
 //! - [`gzip`] — GZIP 블록 압축/해제 *(feature `"gzip"` 활성화 시)*
 //! - [`client`] — HTTP 클라이언트 (세션 관리 + 통신 플로우) *(feature `"client"` 활성화 시)*
 //!
@@ -34,7 +33,6 @@
 
 #[cfg(feature = "client")]
 pub mod client;
-pub mod codec;
 pub mod constants;
 pub mod error;
 pub mod field;
