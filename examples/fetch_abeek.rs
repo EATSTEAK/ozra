@@ -107,7 +107,7 @@ async fn fetch_abeek_data(arg1: &str, arg2: &str, arg3: &str) -> OutputData {
     ];
 
     // 클라이언트 생성
-    let mut client = match OzClient::new(BASE_URL, "guest", "guest") {
+    let client = match OzClient::new(BASE_URL, "guest", "guest") {
         Ok(c) => c,
         Err(e) => {
             return OutputData {

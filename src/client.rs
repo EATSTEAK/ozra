@@ -129,12 +129,19 @@ impl OzClient {
     ///
     /// `RwLock` guard의 수명 제약으로 `String`을 반환합니다.
     pub fn session_id(&self) -> String {
-        self.session.read().unwrap().session_id.clone()
+        self.session
+            .read()
+            .expect("session lock poisoned")
+            .session_id
+            .clone()
     }
 
     /// 인증 여부를 확인합니다 (세션 ID가 초기값이 아닌지).
     pub fn is_authenticated(&self) -> bool {
-        self.session.read().unwrap().is_authenticated()
+        self.session
+            .read()
+            .expect("session lock poisoned")
+            .is_authenticated()
     }
 
     /// 세션을 초기화합니다 — `GET {base_url}/ozView.jsp`로 JSESSIONID 쿠키를 획득합니다.
@@ -318,7 +325,12 @@ impl OzClient {
             return Err(OzError::NotAuthenticated);
         }
 
-        let session_id = self.session.read().unwrap().session_id.clone();
+        let session_id = self
+            .session
+            .read()
+            .expect("session lock poisoned")
+            .session_id
+            .clone();
         let req_buf = request.build(&session_id)?;
         let resp_buf = self.send_request(req_buf).await?;
         R::Response::parse(&resp_buf)
@@ -338,17 +350,30 @@ impl OzClient {
     /// - `send_request`에서 발생 가능한 모든 에러
     pub async fn login(&self) -> Result<LoginResponse> {
         let req = LoginRequest::new(&self.username, &self.password);
-        let session_id = self.session.read().unwrap().session_id.clone();
+        let session_id = self
+            .session
+            .read()
+            .expect("session lock poisoned")
+            .session_id
+            .clone();
         let req_buf = req.build(&session_id)?;
         let resp_buf = self.send_request(req_buf).await?;
         let response = LoginResponse::parse(&resp_buf)?;
 
         if let Some(sid) = response.header.session_id() {
-            self.session.write().unwrap().session_id = sid.to_string();
+            self.session
+                .write()
+                .expect("session lock poisoned")
+                .session_id = sid.to_string();
         }
 
         // NOTE: If session ID is still the initial value, login has failed
-        let current_session_id = self.session.read().unwrap().session_id.clone();
+        let current_session_id = self
+            .session
+            .read()
+            .expect("session lock poisoned")
+            .session_id
+            .clone();
         if current_session_id == INITIAL_SESSION_ID {
             return Err(OzError::LoginFailed {
                 session_id: current_session_id,
@@ -501,7 +526,10 @@ impl OzClient {
     /// 테스트용 세션 ID 설정 메서드
     #[cfg(test)]
     fn set_session_id(&self, session_id: &str) {
-        self.session.write().unwrap().session_id = session_id.to_string();
+        self.session
+            .write()
+            .expect("session lock poisoned")
+            .session_id = session_id.to_string();
     }
 }
 

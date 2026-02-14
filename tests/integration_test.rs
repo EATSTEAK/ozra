@@ -521,7 +521,7 @@ async fn live_fetch_syllabus() {
     use ozra::messages::{DataModuleRequest, RepositoryRequest};
 
     let base_url = "https://office.ssu.ac.kr/oz70";
-    let mut client = OzClient::new(base_url, "guest", "guest").unwrap();
+    let client = OzClient::new(base_url, "guest", "guest").unwrap();
 
     // Step 0: 세션 초기화
     client.init_session().await.expect("init_session failed");
