@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::types::OzMessageHeader;
 use crate::wire::{BufReader, BufWriter};
 
-use super::common::{parse_exception, parse_header, write_common_header};
+use super::common::{parse_exception, parse_header, write_common_header_with_auth};
 
 /// OZ 프로토콜 요청 메시지의 공통 인터페이스
 ///
@@ -53,6 +53,19 @@ pub trait OzRequest: Sized {
     /// 공통 헤더 이후에 기록되는 메시지별 페이로드를 작성합니다.
     fn write_payload(&self, writer: &mut BufWriter) -> Result<()>;
 
+    /// 인증 정보를 반환합니다.
+    ///
+    /// 공통 헤더의 `un`(사용자명)과 `p`(비밀번호) 필드에 사용됩니다.
+    /// 기본값은 `("guest", "guest")`이며, 로그인 요청 등
+    /// 커스텀 인증 정보가 필요한 경우 오버라이드합니다.
+    ///
+    /// # Returns
+    ///
+    /// `(username, password)` 튜플
+    fn auth_credentials(&self) -> (&str, &str) {
+        ("guest", "guest")
+    }
+
     /// 완전한 요청 바이너리를 빌드합니다.
     ///
     /// 공통 헤더 + 타입 마커 + 페이로드 + trailing marker를 모두 포함합니다.
@@ -67,8 +80,15 @@ pub trait OzRequest: Sized {
     fn build(&self, session_id: &str) -> Result<Vec<u8>> {
         let mut writer = BufWriter::new();
 
-        // 공통 헤더 작성
-        write_common_header(&mut writer, Self::CLASS_NAME, session_id)?;
+        // 공통 헤더 작성 (인증 정보 포함)
+        let (username, password) = self.auth_credentials();
+        write_common_header_with_auth(
+            &mut writer,
+            Self::CLASS_NAME,
+            username,
+            password,
+            session_id,
+        )?;
 
         // 타입 마커 (있는 경우)
         if let Some(marker) = Self::TYPE_MARKER {

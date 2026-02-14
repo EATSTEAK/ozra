@@ -18,7 +18,6 @@
 //! ```
 
 use crate::error::Result;
-use crate::messages::common::write_common_header_with_auth;
 use crate::messages::traits::{OzRequest, OzRequestResponse, OzResponse};
 use crate::types::OzMessageHeader;
 use crate::wire::{BufReader, BufWriter};
@@ -60,32 +59,9 @@ impl OzRequest for LoginRequest {
         Ok(())
     }
 
-    /// 로그인 요청은 사용자명/비밀번호를 공통 헤더에 포함시킵니다.
-    ///
-    /// 기본 [`OzRequest::build`]를 오버라이드하여 커스텀 인증 정보를 전달합니다.
-    fn build(&self, session_id: &str) -> Result<Vec<u8>> {
-        let mut writer = BufWriter::new();
-
-        // 커스텀 인증 정보로 공통 헤더 작성
-        write_common_header_with_auth(
-            &mut writer,
-            Self::CLASS_NAME,
-            &self.username,
-            &self.password,
-            session_id,
-        )?;
-
-        // 타입 마커 (없음)
-
-        // 페이로드
-        self.write_payload(&mut writer)?;
-
-        // Trailing marker
-        if let Some(marker) = Self::TRAILING_MARKER {
-            writer.write_u32(marker)?;
-        }
-
-        Ok(writer.into_bytes())
+    /// 로그인 요청은 커스텀 인증 정보(사용자명/비밀번호)를 공통 헤더에 포함시킵니다.
+    fn auth_credentials(&self) -> (&str, &str) {
+        (&self.username, &self.password)
     }
 }
 
