@@ -15,7 +15,7 @@
 //! let buf = req.build("session123")?;
 //! ```
 
-use crate::constants::DATA_MODULE_PREFIX;
+use crate::constants::{DATA_MODULE_PREFIX, SUB_MAGIC};
 use crate::error::{OzError, Result};
 use crate::field::read_row;
 use crate::messages::common::parse_header;
@@ -59,8 +59,6 @@ pub struct DataModuleRequest {
 }
 
 impl DataModuleRequest {
-    /// DataModule 요청 관련 상수
-    pub const SUB_MAGIC: u32 = 0x2710;
     /// Trailing constant 1
     pub const TRAILING_CONST_1: u32 = 2;
     /// Trailing constant 2
@@ -75,7 +73,7 @@ impl OzRequest for DataModuleRequest {
 
     fn write_payload(&self, writer: &mut BufWriter) -> Result<()> {
         writer.write_utf16be(&self.odi_name)?;
-        writer.write_u32(Self::SUB_MAGIC)?;
+        writer.write_u32(SUB_MAGIC)?;
         writer.write_utf16be(&self.category)?;
         writer.write_u8(0x00)?; // T1E = false
         writer.write_u8(0x00)?; // w0J = false
@@ -131,18 +129,13 @@ pub struct CompactDataModuleRequest {
     pub category: String,
 }
 
-impl CompactDataModuleRequest {
-    /// DataModule 요청 관련 상수 (380과 동일)
-    pub const SUB_MAGIC: u32 = 0x2710;
-}
-
 impl OzRequest for CompactDataModuleRequest {
     const CLASS_NAME: &'static str = "oz.framework.cp.message.FrameworkRequestDataModule";
     const TYPE_MARKER: Option<u32> = Some(0x17E);
 
     fn write_payload(&self, writer: &mut BufWriter) -> Result<()> {
         writer.write_utf16be(&self.odi_name)?;
-        writer.write_u32(Self::SUB_MAGIC)?;
+        writer.write_u32(SUB_MAGIC)?;
         writer.write_utf16be(&self.category)?;
         writer.write_u8(0x00)?; // w0J = false (서버 버전 >= 20050126)
         Ok(())
@@ -436,7 +429,8 @@ pub fn build_compact_data_module_request(
 mod tests {
     use super::*;
     use crate::constants::{
-        COMPACT_DATA_MODULE_TYPE_MARKER, DATA_MODULE_PREFIX, DATA_MODULE_TYPE_MARKER, MAGIC, REQUEST_FRAME_SIZE, SUB_MAGIC,
+        COMPACT_DATA_MODULE_TYPE_MARKER, DATA_MODULE_PREFIX, DATA_MODULE_TYPE_MARKER, MAGIC,
+        REQUEST_FRAME_SIZE, SUB_MAGIC,
     };
     use crate::messages::common::parse_header;
     use crate::types::FieldValue;

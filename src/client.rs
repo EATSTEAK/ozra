@@ -38,9 +38,9 @@ use reqwest::Client;
 use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
 use crate::error::{OzError, Result};
 use crate::messages::{
-    CompactDataModuleRequest, DataModuleRequest, LoginRequest, LoginResponse, OzRequest, OzRequestResponse, OzResponse,
-    RepositoryRequest, TransactionDataSet, TransactionRequest, TransactionResponse,
-    check_error_result,
+    CompactDataModuleRequest, DataModuleRequest, LoginRequest, LoginResponse, OzRequest,
+    OzRequestResponse, OzResponse, RepositoryRequest, TransactionDataSet, TransactionRequest,
+    TransactionResponse, check_error_result,
 };
 use crate::types::DataModuleResponse;
 
@@ -477,7 +477,8 @@ mod tests {
     use super::*;
     use crate::constants::{INITIAL_SESSION_ID, REQUEST_FRAME_SIZE};
     use crate::messages::{
-        build_compact_data_module_request, build_data_module_request, build_login_request, build_repository_request,
+        build_compact_data_module_request, build_data_module_request, build_login_request,
+        build_repository_request,
     };
 
     #[test]

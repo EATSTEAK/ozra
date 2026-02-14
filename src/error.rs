@@ -874,7 +874,8 @@ mod tests {
     fn test_category_clone_and_copy() {
         let cat = ErrorCategory::Viewer;
         let cat2 = cat; // Copy
-        let cat3 = cat.clone(); // Clone
+        #[allow(clippy::clone_on_copy)]
+        let cat3 = cat.clone(); // Clone — 의도적으로 Clone 트레이트 검증
         assert_eq!(cat, cat2);
         assert_eq!(cat, cat3);
     }
