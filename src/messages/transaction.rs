@@ -26,22 +26,17 @@
 //! - 후행 상수 없음 (DataModule은 trailing constants 3개)
 //! - 데이터셋 직렬화 포함 (DataModule은 일반적으로 비어 있음)
 //!
-//! # ⚠️ INTEGER/SMALLINT 직렬화 그룹핑 불일치
+//! # INTEGER/SMALLINT 직렬화 그룹핑
 //!
-//! 현재 구현의 `write_field_value()` 그룹핑과 프로토콜 문서
-//! `08_transaction_dataset.md` §5.4 `R_.TlW`의 그룹핑이
-//! **INTEGER와 SMALLINT에 대해 반대**입니다:
+//! 프로토콜 문서 `08_transaction_dataset.md` §5.4 `R_.TlW`에 맞춰
+//! `write_field_value()` / `read_field_value()` 그룹핑이 수정되었습니다:
 //!
-//! | 타입 | 현재 구현 (`write_field_value`) | 프로토콜 문서 (`R_.TlW`) |
-//! |------|-------------------------------|------------------------|
-//! | TinyInt + SmallInt | `i32` / null=`i32::MIN` | — |
-//! | Integer | `bool` + `i32` | `writeInt` / null=`0x80000000` |
-//! | Integer + TinyInt | — | `writeInt` / null=`0x80000000` |
-//! | SmallInt | — | `bool` + `writeInt` |
+//! | 타입 | 직렬화 형식 |
+//! |------|------------|
+//! | Integer + TinyInt | `i32` / null=`i32::MIN` (0x80000000) |
+//! | SmallInt | `bool` + `i32` |
 //!
-//! 현재 구현은 `read_field_value()`와 **대칭적**이므로
-//! DataModule read↔write 호환이 보장됩니다.
-//! 서버 트래픽 검증 시 **가장 먼저 확인할 포인트**입니다.
+//! Ref: `plans/codebase-improvement-proposal.md` §4.3
 //!
 //! # 예시
 //!
@@ -546,9 +541,7 @@ mod tests {
         assert!(!is_null);
         let name_val = reader.read_utf().unwrap();
         assert_eq!(name_val, "Alice");
-        // Integer: bool(false) + writeInt(30)
-        let is_null = reader.read_bool().unwrap();
-        assert!(!is_null);
+        // Integer: sentinel i32(30), no bool prefix
         let age_val = reader.read_i32().unwrap();
         assert_eq!(age_val, 30);
 
@@ -557,8 +550,7 @@ mod tests {
         assert!(!is_null);
         let name_val = reader.read_utf().unwrap();
         assert_eq!(name_val, "Bob");
-        let is_null = reader.read_bool().unwrap();
-        assert!(!is_null);
+        // Integer: sentinel i32(25), no bool prefix
         let age_val = reader.read_i32().unwrap();
         assert_eq!(age_val, 25);
     }
@@ -655,9 +647,7 @@ mod tests {
         let _nullable = reader.read_bool().unwrap();
         let row_count1 = reader.read_i32().unwrap();
         assert_eq!(row_count1, 1);
-        // Integer: bool(false) + i32(1)
-        let is_null = reader.read_bool().unwrap();
-        assert!(!is_null);
+        // Integer: sentinel i32(1), no bool prefix
         let id_val = reader.read_i32().unwrap();
         assert_eq!(id_val, 1);
 
@@ -960,8 +950,8 @@ mod tests {
         // VarChar null: bool(true)
         let is_null = reader.read_bool().unwrap();
         assert!(is_null);
-        // Integer null: bool(true)
-        let is_null = reader.read_bool().unwrap();
-        assert!(is_null);
+        // Integer null: sentinel i32::MIN
+        let int_null = reader.read_i32().unwrap();
+        assert_eq!(int_null, i32::MIN);
     }
 }

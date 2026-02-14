@@ -14,8 +14,8 @@
 //!
 //! | 필드 클래스 | SQL 타입 | 바이너리 형식 | Null 판별 |
 //! |---|---|---|---|
-//! | BasicSmallField | TINYINT, SMALLINT | `i32(4B)` | `== i32::MIN` |
-//! | BasicIntField | INTEGER | `bool(1B) + i32(4B)` | `bool == true` |
+//! | BasicIntField | INTEGER, TINYINT | `i32(4B)` | `== i32::MIN` |
+//! | BasicSmallField | SMALLINT | `bool(1B) + i32(4B)` | `bool == true` |
 //! | BasicLongField | BIGINT | `bool(1B) + i64(8B)` | `bool == true` |
 //! | BasicFloatField | REAL | `bool(1B) + f32(4B)` | `bool == true` |
 //! | BasicDoubleField | FLOAT, DOUBLE | `bool(1B) + f64(8B)` | `bool == true` |
@@ -48,9 +48,9 @@ use crate::wire::{BufReader, BufWriter};
 /// 바이너리 데이터가 부족하면 [`OzError::UnexpectedEof`](crate::error::OzError::UnexpectedEof)를 반환합니다.
 pub fn read_field_value(reader: &mut BufReader, sql_type: SqlType) -> Result<FieldValue> {
     match sql_type {
-        // BasicSmallField: TINYINT(-6), SMALLINT(5)
+        // BasicIntField: INTEGER(4), TINYINT(-6)
         // 4B i32, null sentinel = i32::MIN (0x80000000)
-        SqlType::TinyInt | SqlType::SmallInt => {
+        SqlType::Integer | SqlType::TinyInt => {
             let raw = reader.read_i32()?;
             if raw == i32::MIN {
                 Ok(FieldValue::Null)
@@ -59,9 +59,9 @@ pub fn read_field_value(reader: &mut BufReader, sql_type: SqlType) -> Result<Fie
             }
         }
 
-        // BasicIntField: INTEGER(4)
+        // BasicSmallField: SMALLINT(5)
         // bool(1B) + i32(4B), null이면 bool == true
-        SqlType::Integer => {
+        SqlType::SmallInt => {
             let is_null = reader.read_bool()?;
             if is_null {
                 Ok(FieldValue::Null)
@@ -209,8 +209,8 @@ fn type_mismatch(sql_type: SqlType, expected: &str, actual: &FieldValue) -> OzEr
 ///
 /// | SQL 타입 | Null 표현 | 값 표현 |
 /// |---|---|---|
-/// | `TinyInt`, `SmallInt` | `i32::MIN` | `i32` |
-/// | `Integer` | `bool(true)` | `bool(false) + i32` |
+/// | `Integer`, `TinyInt` | `i32::MIN` | `i32` |
+/// | `SmallInt` | `bool(true)` | `bool(false) + i32` |
 /// | `BigInt` | `bool(true)` | `bool(false) + i64` |
 /// | `Real` | `bool(true)` | `bool(false) + f32` |
 /// | `Float`, `Double` | `bool(true)` | `bool(false) + f64` |
@@ -225,17 +225,17 @@ pub fn write_field_value(
     value: &FieldValue,
 ) -> Result<()> {
     match sql_type {
-        // BasicSmallField: TINYINT(-6), SMALLINT(5)
+        // BasicIntField: INTEGER(4), TINYINT(-6)
         // 4B i32, null sentinel = i32::MIN (0x80000000)
-        SqlType::TinyInt | SqlType::SmallInt => match value {
+        SqlType::Integer | SqlType::TinyInt => match value {
             FieldValue::Null => writer.write_i32(i32::MIN),
             FieldValue::Int(v) => writer.write_i32(*v),
             _ => Err(type_mismatch(sql_type, "Int", value)),
         },
 
-        // BasicIntField: INTEGER(4)
+        // BasicSmallField: SMALLINT(5)
         // bool(1B) + i32(4B), null이면 bool == true
-        SqlType::Integer => match value {
+        SqlType::SmallInt => match value {
             FieldValue::Null => writer.write_bool(true),
             FieldValue::Int(v) => {
                 writer.write_bool(false)?;
@@ -456,6 +456,7 @@ mod tests {
     #[test]
     fn test_smallint_normal_value() {
         let mut w = BufWriter::new();
+        w.write_bool(false).unwrap(); // not null
         w.write_i32(256).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -466,7 +467,7 @@ mod tests {
     #[test]
     fn test_smallint_null_sentinel() {
         let mut w = BufWriter::new();
-        w.write_i32(i32::MIN).unwrap();
+        w.write_bool(true).unwrap(); // null
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
         let v = read_field_value(&mut r, SqlType::SmallInt).unwrap();
@@ -476,6 +477,7 @@ mod tests {
     #[test]
     fn test_smallint_zero() {
         let mut w = BufWriter::new();
+        w.write_bool(false).unwrap();
         w.write_i32(0).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -486,6 +488,7 @@ mod tests {
     #[test]
     fn test_smallint_negative() {
         let mut w = BufWriter::new();
+        w.write_bool(false).unwrap();
         w.write_i32(-100).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -496,7 +499,6 @@ mod tests {
     #[test]
     fn test_integer_normal_value() {
         let mut w = BufWriter::new();
-        w.write_bool(false).unwrap(); // not null
         w.write_i32(12345).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -507,7 +509,7 @@ mod tests {
     #[test]
     fn test_integer_null() {
         let mut w = BufWriter::new();
-        w.write_bool(true).unwrap(); // null
+        w.write_i32(i32::MIN).unwrap(); // 0x80000000
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
         let v = read_field_value(&mut r, SqlType::Integer).unwrap();
@@ -517,7 +519,6 @@ mod tests {
     #[test]
     fn test_integer_zero() {
         let mut w = BufWriter::new();
-        w.write_bool(false).unwrap();
         w.write_i32(0).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -968,8 +969,7 @@ mod tests {
         // VARCHAR "NAME" = "홍길동"
         w.write_bool(false).unwrap();
         w.write_utf("홍길동").unwrap();
-        // INTEGER "AGE" = 30
-        w.write_bool(false).unwrap();
+        // INTEGER "AGE" = 30 (sentinel i32, no bool prefix)
         w.write_i32(30).unwrap();
         // NUMERIC "SALARY" = "50000.00"
         w.write_utf("50000.00").unwrap();
@@ -1025,8 +1025,8 @@ mod tests {
         let mut w = BufWriter::new();
         // VARCHAR "DESCRIPTION" = null
         w.write_bool(true).unwrap();
-        // INTEGER "COUNT" = null
-        w.write_bool(true).unwrap();
+        // INTEGER "COUNT" = null (sentinel i32::MIN)
+        w.write_i32(i32::MIN).unwrap();
         // DATE "CREATED" = null
         let null_millis: i64 = (i32::MIN as i64) << 32;
         w.write_i64(null_millis).unwrap();
@@ -1061,6 +1061,7 @@ mod tests {
         }];
 
         let mut w = BufWriter::new();
+        w.write_bool(false).unwrap(); // not null
         w.write_i32(999).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);
@@ -1146,10 +1147,9 @@ mod tests {
         ];
 
         let mut w = BufWriter::new();
-        // TINYINT = 7
+        // TINYINT = 7 (sentinel i32)
         w.write_i32(7).unwrap();
-        // INTEGER = 42
-        w.write_bool(false).unwrap();
+        // INTEGER = 42 (sentinel i32, no bool prefix)
         w.write_i32(42).unwrap();
         // BIGINT = 1234567890123
         w.write_bool(false).unwrap();
@@ -1219,6 +1219,7 @@ mod tests {
 
         // SmallInt 하나만 쓰고 Integer는 쓰지 않음
         let mut w = BufWriter::new();
+        w.write_bool(false).unwrap(); // SmallInt not null
         w.write_i32(10).unwrap();
         let data = writer_to_vec(&w);
         let mut r = BufReader::new(&data);

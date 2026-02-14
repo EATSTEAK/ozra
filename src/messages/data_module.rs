@@ -725,20 +725,18 @@ mod tests {
 
         // === RecordInfo[] (2행) ===
         let mut row1_data = Vec::new();
-        row1_data.push(0x00);
+        row1_data.push(0x00); // VarChar not null
         let alice = "Alice";
         row1_data.extend_from_slice(&(alice.len() as u16).to_be_bytes());
         row1_data.extend_from_slice(alice.as_bytes());
-        row1_data.push(0x00);
-        row1_data.extend_from_slice(&30i32.to_be_bytes());
+        row1_data.extend_from_slice(&30i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
 
         let mut row2_data = Vec::new();
-        row2_data.push(0x00);
+        row2_data.push(0x00); // VarChar not null
         let bob = "Bob";
         row2_data.extend_from_slice(&(bob.len() as u16).to_be_bytes());
         row2_data.extend_from_slice(bob.as_bytes());
-        row2_data.push(0x00);
-        row2_data.extend_from_slice(&25i32.to_be_bytes());
+        row2_data.extend_from_slice(&25i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
 
         let row1_offset = 0i32;
         let row2_offset = row1_data.len() as i32;
@@ -877,7 +875,7 @@ mod tests {
         buf.extend_from_slice(&1i32.to_be_bytes());
         buf.extend_from_slice(&0i32.to_be_bytes());
 
-        buf.push(0x01); // isNull=true
+        buf.extend_from_slice(&i32::MIN.to_be_bytes()); // Integer null = sentinel i32::MIN
 
         let response = parse_data_module(&buf).unwrap();
         let (_, rows) = &response.datasets[0];
@@ -964,7 +962,11 @@ mod tests {
 
         buf.extend_from_slice(&10i32.to_be_bytes());
 
-        let row1_data: Vec<u8> = 42i32.to_be_bytes().to_vec();
+        let row1_data: Vec<u8> = {
+            let mut v = vec![0x00]; // SmallInt: bool prefix not null
+            v.extend_from_slice(&42i32.to_be_bytes());
+            v
+        };
         let row2_data: Vec<u8> = vec![0x01];
 
         buf.extend_from_slice(&(row1_data.len() as i32).to_be_bytes());
@@ -1047,8 +1049,7 @@ mod tests {
         buf.extend_from_slice(&5i32.to_be_bytes());
         buf.extend_from_slice(&(-1i32).to_be_bytes());
 
-        buf.push(0x00);
-        buf.extend_from_slice(&42i32.to_be_bytes());
+        buf.extend_from_slice(&42i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
 
         let err = parse_data_module(&buf).unwrap_err();
         assert!(matches!(err, OzError::UnexpectedEof { .. }));
