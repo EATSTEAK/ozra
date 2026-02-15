@@ -5,7 +5,8 @@
 //! # 예시
 //!
 //! ```ignore
-//! use ozra::messages::{DataModuleRequest, OzRequest};
+//! use ozra::messages::data_module::DataModuleRequest;
+//! use ozra::messages::traits::OzRequest;
 //!
 //! let req = DataModuleRequest {
 //!     odi_name: "report.odi".to_string(),

@@ -336,9 +336,9 @@ pub fn check_error(buf: &[u8]) -> Option<String> {
 /// # 예시
 ///
 /// ```no_run
-/// use ozra::messages::check_error_result;
+/// use ozra::messages::common::check_error_result;
 ///
-/// fn handle_response(buf: &[u8]) -> ozra::Result<()> {
+/// fn handle_response(buf: &[u8]) -> ozra::error::Result<()> {
 ///     check_error_result(buf)?;
 ///     // 정상 응답 처리...
 ///     Ok(())

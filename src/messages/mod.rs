@@ -4,29 +4,29 @@
 //!
 //! ## 핵심 Trait
 //!
-//! - [`OzRequest`]: 요청 메시지 직렬화 인터페이스
-//! - [`OzResponse`]: 응답 메시지 역직렬화 인터페이스
-//! - [`OzRequestResponse`]: 요청-응답 타입 페어링
+//! - [`traits::OzRequest`]: 요청 메시지 직렬화 인터페이스
+//! - [`traits::OzResponse`]: 응답 메시지 역직렬화 인터페이스
+//! - [`traits::OzRequestResponse`]: 요청-응답 타입 페어링
 //!
 //! ## 메시지 타입
 //!
-//! - [`LoginRequest`] / [`LoginResponse`]: 사용자 로그인
-//! - [`RepositoryRequest`] / [`RepositoryResponse`]: 리포지토리 파일 다운로드
-//! - [`DataModuleRequest`]: DataModule 데이터 조회
+//! - [`login::LoginRequest`] / [`login::LoginResponse`]: 사용자 로그인
+//! - [`repository::RepositoryRequest`] / [`repository::RepositoryResponse`]: 리포지토리 파일 다운로드
+//! - [`data_module::DataModuleRequest`]: DataModule 데이터 조회
 //!
 //! ## 공통 유틸리티
 //!
-//! - [`write_common_header`]: 모든 요청에 공통인 헤더 작성
-//! - [`parse_header`]: 응답 헤더 파싱
-//! - [`parse_exception`]: 에러 응답 파싱
-//! - [`check_error`]: 응답에서 에러 감지
-//! - [`check_error_result`]: 응답에서 에러 감지 (Result 반환)
+//! - [`common::write_common_header`]: 모든 요청에 공통인 헤더 작성
+//! - [`common::parse_header`]: 응답 헤더 파싱
+//! - [`common::parse_exception`]: 에러 응답 파싱
+//! - [`common::check_error`]: 응답에서 에러 감지
+//! - [`common::check_error_result`]: 응답에서 에러 감지 (Result 반환)
 //!
 //! ## 모듈 구조
 //!
 //! ```text
 //! messages/
-//! ├── mod.rs           # 모듈 re-export (현재 파일)
+//! ├── mod.rs           # 모듈 정의 (현재 파일)
 //! ├── traits.rs        # OzRequest, OzResponse, OzRequestResponse trait 정의
 //! ├── common.rs        # 공통 헤더 빌더/파서
 //! ├── login.rs         # LoginRequest/LoginResponse
@@ -38,26 +38,5 @@ pub mod common;
 pub mod data_module;
 pub mod login;
 pub mod repository;
-mod traits;
+pub mod traits;
 pub mod transaction;
-
-// Trait re-exports
-pub use traits::{OzRequest, OzRequestResponse, OzResponse};
-
-// Common utilities re-export
-pub use common::{
-    check_error, check_error_result, parse_exception, parse_header, write_common_header,
-    write_common_header_with_auth,
-};
-
-// Message type re-exports
-pub use data_module::{
-    CompactDataModuleRequest, DataModuleRequest, parse_basic_field, parse_data_module,
-    parse_dataset_group,
-};
-pub use login::{LoginRequest, LoginResponse};
-pub use repository::{
-    RepositoryContentType, RepositoryItem, RepositoryRequest, RepositoryRequestOptions,
-    RepositoryResponse, RepositoryStatus,
-};
-pub use transaction::{TransactionDataSet, TransactionRequest, TransactionResponse};

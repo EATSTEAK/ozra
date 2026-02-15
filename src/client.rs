@@ -15,7 +15,8 @@
 //! [`OzRequestResponse`] trait을 구현한 모든 요청 타입에 대해 타입 안전한 요청-응답 처리가 가능합니다:
 //!
 //! ```ignore
-//! use ozra::messages::{RepositoryRequest, DataModuleRequest};
+//! use ozra::messages::repository::RepositoryRequest;
+//! use ozra::messages::data_module::DataModuleRequest;
 //!
 //! // Repository 파일 다운로드
 //! let repo_req = RepositoryRequest::new("/CM/report.ozr");
@@ -42,7 +43,7 @@
 //! use ozra::client::{OzClientBuilder, RetryPolicy};
 //! use std::time::Duration;
 //!
-//! # async fn example() -> ozra::Result<()> {
+//! # async fn example() -> ozra::error::Result<()> {
 //! let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
 //!     .retry_policy(RetryPolicy::new(3, Duration::from_millis(100)))
 //!     .build()?;
@@ -57,11 +58,12 @@ use reqwest::Client;
 
 use crate::constants::{INITIAL_SESSION_ID, USER_AGENT};
 use crate::error::{OzError, Result};
-use crate::messages::{
-    CompactDataModuleRequest, DataModuleRequest, LoginRequest, LoginResponse, OzRequest,
-    OzRequestResponse, OzResponse, RepositoryRequest, TransactionDataSet, TransactionRequest,
-    TransactionResponse, check_error_result,
-};
+use crate::messages::common::check_error_result;
+use crate::messages::data_module::{CompactDataModuleRequest, DataModuleRequest};
+use crate::messages::login::{LoginRequest, LoginResponse};
+use crate::messages::repository::RepositoryRequest;
+use crate::messages::traits::{OzRequest, OzRequestResponse, OzResponse};
+use crate::messages::transaction::{TransactionDataSet, TransactionRequest, TransactionResponse};
 use crate::types::DataModuleResponse;
 
 /// 에러 복구를 위한 재시도 정책
@@ -182,7 +184,7 @@ impl SessionState {
 /// ```no_run
 /// use ozra::client::OzClient;
 ///
-/// # async fn example() -> ozra::Result<()> {
+/// # async fn example() -> ozra::error::Result<()> {
 /// let client = OzClient::new(
 ///     "https://example.com/oz70",
 ///     "guest",
@@ -279,7 +281,7 @@ impl OzClient {
     /// ```no_run
     /// use ozra::client::OzClient;
     ///
-    /// # async fn example() -> ozra::Result<()> {
+    /// # async fn example() -> ozra::error::Result<()> {
     /// let client = OzClient::new("https://example.com/oz70", "guest", "guest")?;
     /// let params = vec![
     ///     ("arg1".to_string(), "2026".to_string()),
@@ -433,7 +435,8 @@ impl OzClient {
     /// # 예시
     ///
     /// ```ignore
-    /// use ozra::messages::{RepositoryRequest, DataModuleRequest};
+    /// use ozra::messages::repository::RepositoryRequest;
+    /// use ozra::messages::data_module::DataModuleRequest;
     ///
     /// // Repository 파일 다운로드
     /// let repo_req = RepositoryRequest::new("/CM/report.ozr");
@@ -682,7 +685,7 @@ impl OzClient {
 /// use ozra::client::{OzClientBuilder, RetryPolicy};
 /// use std::time::Duration;
 ///
-/// # fn example() -> ozra::Result<()> {
+/// # fn example() -> ozra::error::Result<()> {
 /// let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
 ///     .retry_policy(RetryPolicy::new(3, Duration::from_millis(100)))
 ///     .build()?;
@@ -747,9 +750,10 @@ impl OzClientBuilder {
 mod tests {
     use super::*;
     use crate::constants::{INITIAL_SESSION_ID, REQUEST_FRAME_SIZE};
-    use crate::messages::{
-        CompactDataModuleRequest, DataModuleRequest, LoginRequest, OzRequest, RepositoryRequest,
-    };
+    use crate::messages::data_module::{CompactDataModuleRequest, DataModuleRequest};
+    use crate::messages::login::LoginRequest;
+    use crate::messages::repository::RepositoryRequest;
+    use crate::messages::traits::OzRequest;
 
     #[test]
     fn test_oz_client_new_default_session() {

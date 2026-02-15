@@ -41,7 +41,8 @@
 //! # 예시
 //!
 //! ```
-//! use ozra::messages::{TransactionRequest, OzRequest};
+//! use ozra::messages::transaction::TransactionRequest;
+//! use ozra::messages::traits::OzRequest;
 //! use ozra::constants::REQUEST_FRAME_SIZE;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {

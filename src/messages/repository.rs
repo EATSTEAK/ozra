@@ -14,8 +14,8 @@
 //! # 예시
 //!
 //! ```ignore
-//! use ozra::messages::{RepositoryRequest, OzRequest};
-//! use ozra::messages::repository::{RepositoryRequestOptions, RepositoryStatus};
+//! use ozra::messages::repository::{RepositoryRequest, RepositoryRequestOptions, RepositoryStatus};
+//! use ozra::messages::traits::OzRequest;
 //!
 //! // 기본 요청
 //! let req = RepositoryRequest::new("/CM/report.ozr");

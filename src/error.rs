@@ -376,7 +376,7 @@ impl OzError {
     /// # 예시
     ///
     /// ```rust
-    /// use ozra::OzError;
+    /// use ozra::error::OzError;
     ///
     /// let err = OzError::Io(std::io::Error::new(
     ///     std::io::ErrorKind::ConnectionReset,

@@ -19,7 +19,7 @@
 //! ## 사용 예시
 //!
 //! ```rust
-//! use ozra::{SqlType, FieldKind, FieldValue};
+//! use ozra::types::{SqlType, FieldKind, FieldValue};
 //! use ozra::constants::MAGIC;
 //!
 //! let sql_type = SqlType::try_from(12).unwrap();
@@ -41,14 +41,3 @@ pub mod gzip;
 pub mod messages;
 pub mod types;
 pub mod wire;
-
-// NOTE: Selective re-export — only expose commonly used types
-pub use error::{ErrorCategory, OzError, Result, error_codes, format_error_detail};
-pub use messages::repository::{
-    RepositoryContentType, RepositoryItem, RepositoryRequestOptions, RepositoryStatus,
-};
-pub use messages::transaction::{TransactionDataSet, TransactionRequest, TransactionResponse};
-pub use types::{
-    BasicField, DataModuleMeta, DataModuleResponse, DataSet, DataSetGroup, DataSetInfo, FieldKind,
-    FieldValue, OzMessageHeader, RecordInfo, Row, SqlType,
-};

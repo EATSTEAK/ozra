@@ -10,10 +10,11 @@ use ozra::constants::{
 };
 use ozra::error::OzError;
 use ozra::field::{read_field_value, read_row};
-use ozra::messages::{
-    DataModuleRequest, LoginRequest, OzRequest, RepositoryRequest, check_error, check_error_result,
-    parse_data_module, parse_header,
-};
+use ozra::messages::common::{check_error, check_error_result, parse_header};
+use ozra::messages::data_module::{DataModuleRequest, parse_data_module};
+use ozra::messages::login::LoginRequest;
+use ozra::messages::repository::RepositoryRequest;
+use ozra::messages::traits::OzRequest;
 use ozra::types::{BasicField, FieldKind, FieldValue, SqlType};
 use ozra::wire::{BufReader, BufWriter};
 
@@ -546,7 +547,8 @@ fn feature_client_module_exists() {
 #[ignore = "requires network access to SSU OZ server"]
 async fn live_fetch_syllabus() {
     use ozra::client::OzClient;
-    use ozra::messages::{DataModuleRequest, RepositoryRequest};
+    use ozra::messages::data_module::DataModuleRequest;
+    use ozra::messages::repository::RepositoryRequest;
 
     let base_url = "https://office.ssu.ac.kr/oz70";
     let client = OzClient::new(base_url, "guest", "guest").unwrap();
@@ -696,11 +698,7 @@ fn all_sql_types_field_read_roundtrip() {
             FieldValue::Int(42),
         ),
         // SmallInt null (bool prefix = true)
-        (
-            SqlType::SmallInt,
-            vec![0x01],
-            FieldValue::Null,
-        ),
+        (SqlType::SmallInt, vec![0x01], FieldValue::Null),
         // TinyInt
         (
             SqlType::TinyInt,

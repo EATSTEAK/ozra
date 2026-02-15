@@ -5,7 +5,8 @@
 //! # 예시
 //!
 //! ```ignore
-//! use ozra::messages::{LoginRequest, LoginResponse, OzRequest, OzResponse};
+//! use ozra::messages::login::{LoginRequest, LoginResponse};
+//! use ozra::messages::traits::{OzRequest, OzResponse};
 //! use ozra::constants::INITIAL_SESSION_ID;
 //!
 //! // 기본 게스트 로그인

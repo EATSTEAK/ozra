@@ -23,7 +23,7 @@ use super::common::{parse_exception, parse_header, write_common_header_with_auth
 /// # 예시
 ///
 /// ```ignore
-/// use ozra::messages::OzRequest;
+/// use ozra::messages::traits::OzRequest;
 ///
 /// struct MyRequest { /* ... */ }
 ///
@@ -120,7 +120,7 @@ pub trait OzRequest: Sized {
 /// # 예시
 ///
 /// ```ignore
-/// use ozra::messages::OzResponse;
+/// use ozra::messages::traits::OzResponse;
 /// use ozra::types::OzMessageHeader;
 ///
 /// struct MyResponse {
@@ -189,7 +189,7 @@ pub trait OzResponse: Sized {
 /// # 예시
 ///
 /// ```ignore
-/// use ozra::messages::{OzRequest, OzResponse, OzRequestResponse};
+/// use ozra::messages::traits::{OzRequest, OzResponse, OzRequestResponse};
 ///
 /// struct LoginRequest { /* ... */ }
 /// struct LoginResponse { /* ... */ }
