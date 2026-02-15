@@ -2,6 +2,12 @@
 name = "ozra"
 version = "0.0.1"
 edition = "2024"
+description = "OZRA - OZReport Analyzer, Rust API client for OZReport (unofficial)"
+keywords = ["ozreport", "scraping", "parser"]
+authors = ["Hyomin Koo <me@eatsteak.dev>"]
+license = "MIT"
+repository = "https://github.com/EATSTEAK/ozra"
+readme = "README.md"
 
 [features]
 default = ["client", "gzip"]
