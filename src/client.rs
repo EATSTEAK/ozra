@@ -32,8 +32,26 @@
 //! let dm_resp = client.send(&dm_req).await?;
 //! println!("Datasets: {}", dm_resp.datasets.len());
 //! ```
+//!
+//! ## 에러 복구 및 재시도
+//!
+//! [`RetryPolicy`]를 설정하면 일시적 오류(네트워크 에러, 서버 과부하 등) 발생 시
+//! 지수 백오프(exponential backoff)를 적용하여 자동으로 재시도합니다.
+//!
+//! ```no_run
+//! use ozra::client::{OzClientBuilder, RetryPolicy};
+//! use std::time::Duration;
+//!
+//! # async fn example() -> ozra::Result<()> {
+//! let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+//!     .retry_policy(RetryPolicy::new(3, Duration::from_millis(100)))
+//!     .build()?;
+//! # Ok(())
+//! # }
+//! ```
 
 use std::sync::RwLock;
+use std::time::Duration;
 
 use reqwest::Client;
 
@@ -45,6 +63,94 @@ use crate::messages::{
     TransactionResponse, check_error_result,
 };
 use crate::types::DataModuleResponse;
+
+/// 에러 복구를 위한 재시도 정책
+///
+/// 최대 재시도 횟수, 대기 시간, 지수 백오프 전략을 설정합니다.
+/// 기본값은 재시도 없음(`max_retries = 0`)입니다.
+///
+/// # 백오프 전략
+///
+/// 각 재시도 시 대기 시간은 다음과 같이 계산됩니다:
+///
+/// ```text
+/// delay = min(base_delay × backoff_factor^attempt, max_delay)
+/// ```
+///
+/// # 예시
+///
+/// ```rust
+/// use ozra::client::RetryPolicy;
+/// use std::time::Duration;
+///
+/// // 재시도 없음 (기본값)
+/// let no_retry = RetryPolicy::default();
+/// assert_eq!(no_retry.max_retries, 0);
+///
+/// // 3회 재시도, 100ms 기본 대기
+/// let policy = RetryPolicy::new(3, Duration::from_millis(100));
+/// assert_eq!(policy.max_retries, 3);
+///
+/// // 커스텀 설정
+/// let custom = RetryPolicy {
+///     max_retries: 5,
+///     base_delay: Duration::from_millis(200),
+///     max_delay: Duration::from_secs(30),
+///     backoff_factor: 3.0,
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// 최대 재시도 횟수 (0이면 재시도 없음)
+    pub max_retries: u32,
+    /// 첫 번째 재시도 전 기본 대기 시간
+    pub base_delay: Duration,
+    /// 최대 대기 시간 (백오프 상한)
+    pub max_delay: Duration,
+    /// 백오프 승수 (각 재시도마다 대기 시간에 곱해짐)
+    pub backoff_factor: f64,
+}
+
+impl Default for RetryPolicy {
+    /// 재시도 없음 정책을 반환합니다 (`max_retries = 0`).
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            backoff_factor: 2.0,
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// 지정된 최대 재시도 횟수와 기본 대기 시간으로 정책을 생성합니다.
+    ///
+    /// 백오프 승수는 `2.0`, 최대 대기 시간은 `30초`가 기본값입니다.
+    ///
+    /// # 인자
+    ///
+    /// - `max_retries`: 최대 재시도 횟수
+    /// - `base_delay`: 첫 번째 재시도 전 기본 대기 시간
+    pub fn new(max_retries: u32, base_delay: Duration) -> Self {
+        Self {
+            max_retries,
+            base_delay,
+            ..Default::default()
+        }
+    }
+
+    /// 해당 시도 번호(0-based)에 대한 대기 시간을 계산합니다.
+    ///
+    /// ```text
+    /// delay = min(base_delay × backoff_factor^attempt, max_delay)
+    /// ```
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        let multiplier = self.backoff_factor.powi(attempt as i32);
+        let delay = self.base_delay.mul_f64(multiplier);
+        std::cmp::min(delay, self.max_delay)
+    }
+}
 
 /// 세션 상태 (원자적 관리)
 ///
@@ -99,6 +205,8 @@ pub struct OzClient {
     username: String,
     /// 로그인 비밀번호
     password: String,
+    /// 에러 복구를 위한 재시도 정책
+    retry_policy: RetryPolicy,
 }
 
 impl OzClient {
@@ -111,18 +219,12 @@ impl OzClient {
     /// reqwest::Client는 cookie_store를 활성화하고 rustls-tls를 사용합니다.
     /// 세션 ID는 [`INITIAL_SESSION_ID`](`"-1905"`)로 초기화됩니다.
     pub fn new(base_url: &str, username: &str, password: &str) -> Result<Self> {
-        let http = Client::builder()
-            .cookie_store(true)
-            .user_agent(USER_AGENT)
-            .build()?;
+        OzClientBuilder::new(base_url, username, password).build()
+    }
 
-        Ok(Self {
-            http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-            session: RwLock::new(SessionState::new()),
-            username: username.to_string(),
-            password: password.to_string(),
-        })
+    /// 현재 설정된 재시도 정책을 반환합니다.
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
     }
 
     /// 현재 OZ 프로토콜 세션 ID를 반환합니다.
@@ -245,9 +347,16 @@ impl OzClient {
     /// - POST `{base_url}/server`
     /// - Content-Type: `application/octet-stream`
     /// - 프로토콜 에러 자동 감지 ([`check_error_result`])
+    /// - 재시도 정책이 설정된 경우 재시도 가능한 에러에 대해 지수 백오프로 자동 재시도
     ///
     /// 이 메서드는 [`send`](Self::send) 메서드의 저수준 구현입니다.
     /// 일반적으로 [`send`](Self::send)를 통해 타입 안전한 요청-응답을 사용하세요.
+    ///
+    /// # 재시도 동작
+    ///
+    /// [`RetryPolicy`]가 설정되어 있고 `max_retries > 0`인 경우,
+    /// 재시도 가능한 에러([`OzError::is_retryable`])가 발생하면 지수 백오프를 적용하여
+    /// 최대 `max_retries`회까지 자동으로 재시도합니다.
     ///
     /// # 에러
     ///
@@ -255,13 +364,42 @@ impl OzClient {
     /// - [`OzError::HttpStatus`] — 비정상 HTTP 상태 코드
     /// - [`OzError::ProtocolError`] — 서버가 반환한 OZ 프로토콜 에러
     pub async fn send_request(&self, body: Vec<u8>) -> Result<Vec<u8>> {
+        let mut last_err: Option<OzError> = None;
+
+        for attempt in 0..=self.retry_policy.max_retries {
+            // 재시도 시 백오프 대기
+            if attempt > 0 {
+                let delay = self.retry_policy.delay_for_attempt(attempt - 1);
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.send_request_once(&body).await {
+                Ok(buf) => return Ok(buf),
+                Err(e) => {
+                    // 재시도 불가능한 에러이거나 마지막 시도이면 즉시 반환
+                    if !e.is_retryable() || attempt == self.retry_policy.max_retries {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        // max_retries == 0이고 에러 발생 시 여기에 도달할 수 없지만 안전장치
+        Err(last_err.unwrap_or_else(|| OzError::HttpStatus { status: 0 }))
+    }
+
+    /// 단일 HTTP POST 요청을 전송합니다 (재시도 없음).
+    ///
+    /// [`send_request`](Self::send_request)의 내부 구현입니다.
+    async fn send_request_once(&self, body: &[u8]) -> Result<Vec<u8>> {
         let url = format!("{}/server", self.base_url);
         let resp = self
             .http
             .post(&url)
             .header("Content-Type", "application/octet-stream")
             .header("Accept", "*/*")
-            .body(body)
+            .body(body.to_vec())
             .send()
             .await?;
 
@@ -530,6 +668,78 @@ impl OzClient {
             .write()
             .expect("session lock poisoned")
             .session_id = session_id.to_string();
+    }
+}
+
+/// OZ 클라이언트 빌더
+///
+/// [`OzClient`]를 유연하게 구성할 수 있는 빌더 패턴을 제공합니다.
+/// 재시도 정책 등 선택적 설정을 체이닝 방식으로 구성할 수 있습니다.
+///
+/// # 예시
+///
+/// ```no_run
+/// use ozra::client::{OzClientBuilder, RetryPolicy};
+/// use std::time::Duration;
+///
+/// # fn example() -> ozra::Result<()> {
+/// let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+///     .retry_policy(RetryPolicy::new(3, Duration::from_millis(100)))
+///     .build()?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct OzClientBuilder {
+    base_url: String,
+    username: String,
+    password: String,
+    retry_policy: RetryPolicy,
+}
+
+impl OzClientBuilder {
+    /// 새 빌더를 생성합니다.
+    ///
+    /// 기본 재시도 정책은 재시도 없음(`RetryPolicy::default()`)입니다.
+    pub fn new(base_url: &str, username: &str, password: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
+            retry_policy: RetryPolicy::default(),
+        }
+    }
+
+    /// 재시도 정책을 설정합니다.
+    ///
+    /// # 인자
+    ///
+    /// - `policy`: 적용할 [`RetryPolicy`]
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
+    /// [`OzClient`]를 빌드합니다.
+    ///
+    /// reqwest::Client를 생성하고 설정된 값들로 `OzClient`를 구성합니다.
+    ///
+    /// # 에러
+    ///
+    /// - [`OzError::Http`] — reqwest 클라이언트 빌드 실패
+    pub fn build(self) -> Result<OzClient> {
+        let http = Client::builder()
+            .cookie_store(true)
+            .user_agent(USER_AGENT)
+            .build()?;
+
+        Ok(OzClient {
+            http,
+            base_url: self.base_url,
+            session: RwLock::new(SessionState::new()),
+            username: self.username,
+            password: self.password,
+            retry_policy: self.retry_policy,
+        })
     }
 }
 
@@ -820,5 +1030,177 @@ mod tests {
     fn test_oz_client_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<OzClient>();
+    }
+
+    // ── RetryPolicy 테스트 ──────────────────────────────────────────
+
+    #[test]
+    fn test_retry_policy_default_no_retries() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_retries, 0);
+        assert_eq!(policy.base_delay, Duration::from_millis(100));
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.backoff_factor, 2.0);
+    }
+
+    #[test]
+    fn test_retry_policy_new() {
+        let policy = RetryPolicy::new(3, Duration::from_millis(200));
+        assert_eq!(policy.max_retries, 3);
+        assert_eq!(policy.base_delay, Duration::from_millis(200));
+        // 기본값 유지
+        assert_eq!(policy.max_delay, Duration::from_secs(30));
+        assert_eq!(policy.backoff_factor, 2.0);
+    }
+
+    #[test]
+    fn test_retry_policy_delay_for_attempt_exponential() {
+        let policy = RetryPolicy::new(5, Duration::from_millis(100));
+
+        // attempt 0: 100ms × 2^0 = 100ms
+        assert_eq!(policy.delay_for_attempt(0), Duration::from_millis(100));
+        // attempt 1: 100ms × 2^1 = 200ms
+        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(200));
+        // attempt 2: 100ms × 2^2 = 400ms
+        assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(400));
+        // attempt 3: 100ms × 2^3 = 800ms
+        assert_eq!(policy.delay_for_attempt(3), Duration::from_millis(800));
+    }
+
+    #[test]
+    fn test_retry_policy_delay_capped_at_max() {
+        let policy = RetryPolicy {
+            max_retries: 10,
+            base_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(5),
+            backoff_factor: 10.0,
+        };
+
+        // attempt 0: 1s × 10^0 = 1s (max_delay 이하)
+        assert_eq!(policy.delay_for_attempt(0), Duration::from_secs(1));
+        // attempt 1: 1s × 10^1 = 10s → capped at 5s
+        assert_eq!(policy.delay_for_attempt(1), Duration::from_secs(5));
+        // attempt 2: 1s × 10^2 = 100s → capped at 5s
+        assert_eq!(policy.delay_for_attempt(2), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_retry_policy_clone() {
+        let policy = RetryPolicy::new(3, Duration::from_millis(100));
+        let cloned = policy.clone();
+        assert_eq!(cloned.max_retries, 3);
+        assert_eq!(cloned.base_delay, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_retry_policy_debug() {
+        let policy = RetryPolicy::default();
+        let debug_str = format!("{:?}", policy);
+        assert!(debug_str.contains("RetryPolicy"));
+        assert!(debug_str.contains("max_retries"));
+    }
+
+    // ── OzClientBuilder 테스트 ──────────────────────────────────────
+
+    #[test]
+    fn test_builder_default_retry_policy() {
+        let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+            .build()
+            .unwrap();
+        assert_eq!(client.retry_policy().max_retries, 0);
+    }
+
+    #[test]
+    fn test_builder_custom_retry_policy() {
+        let policy = RetryPolicy::new(5, Duration::from_millis(500));
+        let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+            .retry_policy(policy)
+            .build()
+            .unwrap();
+        assert_eq!(client.retry_policy().max_retries, 5);
+        assert_eq!(client.retry_policy().base_delay, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_builder_trailing_slash_trimmed() {
+        let client = OzClientBuilder::new("https://example.com/oz70/", "guest", "guest")
+            .build()
+            .unwrap();
+        assert_eq!(client.base_url, "https://example.com/oz70");
+    }
+
+    #[test]
+    fn test_builder_credentials() {
+        let client = OzClientBuilder::new("https://example.com/oz70", "admin", "s3cret")
+            .build()
+            .unwrap();
+        assert_eq!(client.username, "admin");
+        assert_eq!(client.password, "s3cret");
+    }
+
+    #[test]
+    fn test_builder_initial_session_state() {
+        let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+            .build()
+            .unwrap();
+        assert_eq!(client.session_id(), INITIAL_SESSION_ID);
+        assert!(!client.is_authenticated());
+    }
+
+    #[test]
+    fn test_oz_client_new_uses_default_retry_policy() {
+        // OzClient::new는 OzClientBuilder를 통해 생성되므로 기본 RetryPolicy 사용
+        let client = OzClient::new("https://example.com/oz70", "guest", "guest").unwrap();
+        assert_eq!(client.retry_policy().max_retries, 0);
+    }
+
+    /// send_request는 재시도 불가능한 에러에 대해 즉시 반환해야 함 (NotAuthenticated)
+    #[tokio::test]
+    async fn test_send_not_retryable_error_no_retry() {
+        let policy = RetryPolicy::new(3, Duration::from_millis(10));
+        let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
+            .retry_policy(policy)
+            .build()
+            .unwrap();
+        // NotAuthenticated는 재시도 불가능
+        let req = RepositoryRequest::new("/CM/test.ozr");
+        let err = client.send(&req).await.unwrap_err();
+        assert!(matches!(err, OzError::NotAuthenticated));
+    }
+
+    /// HttpStatus 5xx는 재시도 가능
+    #[test]
+    fn test_http_status_5xx_is_retryable() {
+        let err = OzError::HttpStatus { status: 500 };
+        assert!(err.is_retryable());
+
+        let err = OzError::HttpStatus { status: 502 };
+        assert!(err.is_retryable());
+
+        let err = OzError::HttpStatus { status: 503 };
+        assert!(err.is_retryable());
+    }
+
+    /// HttpStatus 4xx는 재시도 불가능 (408, 429 제외)
+    #[test]
+    fn test_http_status_4xx_not_retryable() {
+        let err = OzError::HttpStatus { status: 400 };
+        assert!(!err.is_retryable());
+
+        let err = OzError::HttpStatus { status: 401 };
+        assert!(!err.is_retryable());
+
+        let err = OzError::HttpStatus { status: 404 };
+        assert!(!err.is_retryable());
+    }
+
+    /// HttpStatus 408 (Request Timeout), 429 (Too Many Requests)는 재시도 가능
+    #[test]
+    fn test_http_status_408_429_retryable() {
+        let err = OzError::HttpStatus { status: 408 };
+        assert!(err.is_retryable());
+
+        let err = OzError::HttpStatus { status: 429 };
+        assert!(err.is_retryable());
     }
 }

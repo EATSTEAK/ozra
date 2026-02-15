@@ -20,6 +20,7 @@ reqwest = { version = "0.13.2", features = [
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "macros",
+  "time",
 ], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

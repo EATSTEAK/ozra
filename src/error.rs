@@ -355,6 +355,63 @@ impl std::fmt::Display for ErrorCategory {
 }
 
 impl OzError {
+    /// 이 에러가 재시도 가능한지 판별합니다.
+    ///
+    /// 일시적인 네트워크 오류나 서버 과부하(HTTP 5xx) 등은 재시도 가능하고,
+    /// 프로토콜 에러, 파싱 에러, 인증 에러 등은 재시도해도 결과가 달라지지 않습니다.
+    ///
+    /// # 재시도 가능한 에러
+    ///
+    /// - [`OzError::Http`] — 네트워크 에러 (연결 실패, 타임아웃 등)
+    /// - [`OzError::HttpStatus`] — HTTP 5xx 서버 에러
+    /// - [`OzError::Io`] — 일부 I/O 에러 (ConnectionReset, TimedOut 등)
+    ///
+    /// # 재시도 불가능한 에러
+    ///
+    /// - [`OzError::ProtocolError`] — 서버가 반환한 프로토콜 에러
+    /// - [`OzError::NotAuthenticated`] — 인증 필요 (재시도 대신 재인증 필요)
+    /// - [`OzError::LoginFailed`] — 로그인 실패
+    /// - 파싱 관련 에러들 — 데이터 자체의 문제
+    ///
+    /// # 예시
+    ///
+    /// ```rust
+    /// use ozra::OzError;
+    ///
+    /// let err = OzError::Io(std::io::Error::new(
+    ///     std::io::ErrorKind::ConnectionReset,
+    ///     "connection reset",
+    /// ));
+    /// assert!(err.is_retryable());
+    ///
+    /// let err = OzError::NotAuthenticated;
+    /// assert!(!err.is_retryable());
+    /// ```
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // I/O 에러: 일시적 오류만 재시도 가능
+            Self::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+            ),
+
+            // HTTP 클라이언트 에러: 네트워크 관련 에러는 재시도 가능
+            #[cfg(feature = "client")]
+            Self::Http(e) => e.is_timeout() || e.is_connect() || e.is_request(),
+
+            // HTTP 상태 코드: 5xx 서버 에러, 408 Request Timeout, 429 Too Many Requests
+            #[cfg(feature = "client")]
+            Self::HttpStatus { status } => *status >= 500 || *status == 408 || *status == 429,
+
+            // 나머지는 모두 재시도 불가
+            _ => false,
+        }
+    }
+
     /// `ProtocolError`의 에러 코드에서 [`ErrorCategory`]를 반환합니다.
     ///
     /// `ProtocolError` variant가 아닌 경우 `None`을 반환합니다.
@@ -894,5 +951,137 @@ mod tests {
         set.insert(ErrorCategory::Viewer); // 중복
         set.insert(ErrorCategory::CyclePrint);
         assert_eq!(set.len(), 2);
+    }
+
+    // ── is_retryable 테스트 ──────────────────────────────────────────
+
+    #[test]
+    fn test_is_retryable_io_connection_reset() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_io_connection_aborted() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "connection aborted",
+        ));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_io_timed_out() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out",
+        ));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_io_interrupted() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "interrupted",
+        ));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_is_retryable_io_would_block() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "would block",
+        ));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_io_not_found() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_io_permission_denied() {
+        let err = OzError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+        ));
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_protocol_error() {
+        let err = OzError::ProtocolError {
+            code: -1,
+            message: "access denied".to_string(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_not_authenticated() {
+        assert!(!OzError::NotAuthenticated.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_login_failed() {
+        let err = OzError::LoginFailed {
+            session_id: "-1905".to_string(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_unexpected_eof() {
+        let err = OzError::UnexpectedEof {
+            offset: 0,
+            needed: 4,
+            available: 0,
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_invalid_magic() {
+        let err = OzError::InvalidMagic {
+            expected: 0x2711,
+            actual: 0x0000,
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_decompression_error() {
+        let err = OzError::DecompressionError {
+            detail: "corrupt".to_string(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_repository_not_found() {
+        let err = OzError::RepositoryNotFound {
+            path: "/test.ozr".to_string(),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_type_mismatch() {
+        let err = OzError::TypeMismatch {
+            sql_type: "VarChar".to_string(),
+            expected: "String".to_string(),
+            actual: "i32".to_string(),
+        };
+        assert!(!err.is_retryable());
     }
 }
