@@ -297,7 +297,7 @@ impl<'a> BufReader<'a> {
 /// assert_eq!(&writer.as_bytes()[..4], &[0x00, 0x00, 0x27, 0x11]);
 ///
 /// // 커스텀 크기
-/// let mut small_writer = BufWriter::<64>::with_capacity();
+/// let mut small_writer = BufWriter::<64>::with_size();
 /// small_writer.write_u8(0x42).unwrap();
 /// ```
 pub struct BufWriter<const N: usize = { REQUEST_FRAME_SIZE }> {
@@ -324,11 +324,11 @@ impl<const N: usize> BufWriter<N> {
     /// ```
     /// use ozra::wire::BufWriter;
     ///
-    /// let mut writer = BufWriter::<128>::with_capacity();
+    /// let mut writer = BufWriter::<128>::with_size();
     /// writer.write_u8(0x42).unwrap();
     /// assert_eq!(writer.as_bytes().len(), 128);
     /// ```
-    pub fn with_capacity() -> Self {
+    pub fn with_size() -> Self {
         Self {
             buf: vec![0u8; N],
             offset: 0,
@@ -1475,5 +1475,30 @@ mod tests {
         assert_eq!(r.read_utf16be().unwrap(), "value2");
         assert!(r.read_bool().unwrap());
         assert_eq!(r.read_i32().unwrap(), -42);
+    }
+
+    // ── 커스텀 크기 BufWriter 테스트 ──
+
+    #[test]
+    fn custom_sized_writer_buffer_length() {
+        let writer = BufWriter::<8>::with_size();
+        assert_eq!(writer.as_bytes().len(), 8);
+    }
+
+    #[test]
+    fn custom_sized_writer_overflow() {
+        let mut writer = BufWriter::<8>::with_size();
+        // 8바이트 정확히 채우기 (성공해야 함)
+        writer.write_bytes(&[0u8; 8]).unwrap();
+        // 1바이트 추가 쓰기 시도 → BufferOverflow
+        let err = writer.write_u8(0x00).unwrap_err();
+        assert!(matches!(
+            err,
+            OzError::BufferOverflow {
+                needed: 1,
+                limit: 8,
+                ..
+            }
+        ));
     }
 }
