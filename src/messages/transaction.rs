@@ -64,7 +64,7 @@
 use crate::error::Result;
 use crate::field::write_row;
 use crate::messages::traits::{OzRequest, OzRequestResponse, OzResponse};
-use crate::types::{BasicField, OzMessageHeader, Row};
+use crate::types::{BasicField, DataModuleResponse, OzMessageHeader, Row};
 use crate::wire::{BufReader, BufWriter};
 
 /// 트랜잭션에 포함할 데이터셋
@@ -184,6 +184,100 @@ impl OzResponse for TransactionResponse {
             header,
             raw_payload,
         })
+    }
+}
+
+impl TransactionResponse {
+    /// raw_payload에 대한 읽기 전용 접근을 제공합니다.
+    ///
+    /// 서버 응답의 페이로드 구조가 확인되지 않은 경우, 이 메서드를 통해
+    /// raw 바이트에 접근하여 수동으로 분석할 수 있습니다.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// let response: TransactionResponse = client.send(&req).await?;
+    /// let payload = response.raw_payload();
+    /// println!("payload length: {}", payload.len());
+    /// ```
+    pub fn raw_payload(&self) -> &[u8] {
+        &self.raw_payload
+    }
+
+    /// raw_payload를 DataModule 형식으로 파싱을 시도합니다.
+    ///
+    /// Transaction 응답이 DataModule과 유사한 형식인 경우에만 성공합니다.
+    /// 내부적으로 raw_payload 앞에 원본 헤더를 재구성하여
+    /// [`DataModuleResponse::parse()`]에 전달합니다.
+    ///
+    /// > ⚠️ **주의**: Transaction 응답이 실제로 DataModule 형식을 사용하는지는
+    /// > 서버 구현에 따라 다릅니다. 파싱에 실패하면 에러를 반환합니다.
+    ///
+    /// # 예시
+    ///
+    /// ```ignore
+    /// let response: TransactionResponse = client.send(&req).await?;
+    /// match response.try_parse_as_data_module() {
+    ///     Ok(dm) => {
+    ///         for (group_name, rows) in &dm.datasets {
+    ///             println!("{}: {} rows", group_name, rows.len());
+    ///         }
+    ///     }
+    ///     Err(_) => {
+    ///         // DataModule 형식이 아닌 경우 raw_payload 사용
+    ///         let raw = response.raw_payload();
+    ///     }
+    /// }
+    /// ```
+    pub fn try_parse_as_data_module(&self) -> Result<DataModuleResponse> {
+        use crate::constants::MAGIC;
+        use crate::messages::data_module::parse_data_module;
+
+        // raw_payload만으로는 DataModuleResponse::parse()에 전달할 수 없음.
+        // 헤더를 재구성하여 완전한 바이너리를 만듦.
+        let mut buf = Vec::with_capacity(128 + self.raw_payload.len());
+
+        // Magic
+        buf.extend_from_slice(&MAGIC.to_be_bytes());
+
+        // Class name (UTF-16BE: u32 char_count + UTF-16BE chars)
+        let u16_units: Vec<u16> = self.header.class_name.encode_utf16().collect();
+        buf.extend_from_slice(&(u16_units.len() as u32).to_be_bytes());
+        for u in &u16_units {
+            buf.extend_from_slice(&u.to_be_bytes());
+        }
+
+        // Field count + fields
+        buf.extend_from_slice(&(self.header.fields.len() as u32).to_be_bytes());
+        for (key, value) in &self.header.fields {
+            let k_units: Vec<u16> = key.encode_utf16().collect();
+            buf.extend_from_slice(&(k_units.len() as u32).to_be_bytes());
+            for u in &k_units {
+                buf.extend_from_slice(&u.to_be_bytes());
+            }
+            let v_units: Vec<u16> = value.encode_utf16().collect();
+            buf.extend_from_slice(&(v_units.len() as u32).to_be_bytes());
+            for u in &v_units {
+                buf.extend_from_slice(&u.to_be_bytes());
+            }
+        }
+
+        // raw_payload (DataModule 페이로드)
+        buf.extend_from_slice(&self.raw_payload);
+
+        parse_data_module(&buf)
+    }
+
+    /// 응답이 비어 있는지 확인합니다.
+    ///
+    /// raw_payload가 비어 있으면 `true`를 반환합니다.
+    pub fn is_empty(&self) -> bool {
+        self.raw_payload.is_empty()
+    }
+
+    /// raw_payload의 길이를 반환합니다.
+    pub fn payload_len(&self) -> usize {
+        self.raw_payload.len()
     }
 }
 
@@ -953,5 +1047,199 @@ mod tests {
         // Integer null: sentinel i32::MIN
         let int_null = reader.read_i32().unwrap();
         assert_eq!(int_null, i32::MIN);
+    }
+
+    // ── TransactionResponse 편의 메서드 테스트 ──────────────────────────
+
+    #[test]
+    fn test_transaction_response_raw_payload_accessor() {
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "Test".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        };
+        assert_eq!(resp.raw_payload(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_transaction_response_raw_payload_empty() {
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "Test".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![],
+        };
+        assert!(resp.raw_payload().is_empty());
+    }
+
+    #[test]
+    fn test_transaction_response_is_empty() {
+        let empty = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "Test".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![],
+        };
+        assert!(empty.is_empty());
+
+        let nonempty = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "Test".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![0x01],
+        };
+        assert!(!nonempty.is_empty());
+    }
+
+    #[test]
+    fn test_transaction_response_payload_len() {
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "Test".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![0x01, 0x02, 0x03],
+        };
+        assert_eq!(resp.payload_len(), 3);
+    }
+
+    #[test]
+    fn test_try_parse_as_data_module_invalid_data() {
+        // 임의의 바이트는 DataModule 형식이 아니므로 에러 반환
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "TransactionResult".to_string(),
+                fields: vec![("s".to_string(), "12345".to_string())],
+            },
+            raw_payload: vec![0x01, 0x02, 0x03, 0x04],
+        };
+        let result = resp.try_parse_as_data_module();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_parse_as_data_module_empty_payload() {
+        // 빈 페이로드로 시도하면 에러 반환
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "TransactionResult".to_string(),
+                fields: vec![],
+            },
+            raw_payload: vec![],
+        };
+        let result = resp.try_parse_as_data_module();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_parse_as_data_module_success() {
+        use crate::constants::DATA_MODULE_PREFIX;
+
+        // DataModule 응답의 유효한 페이로드를 raw_payload에 넣어 테스트
+        let mut payload = Vec::with_capacity(512);
+
+        // === 페이로드 헤더 ===
+        payload.extend_from_slice(&380i32.to_be_bytes()); // payload_size
+        payload.extend_from_slice(&0i32.to_be_bytes()); // unknown1
+        payload.push(0x01); // version_byte
+
+        // === TTk 헤더 ===
+        payload.extend_from_slice(&17i32.to_be_bytes()); // version
+        let prefix = DATA_MODULE_PREFIX;
+        payload.extend_from_slice(&(prefix.len() as u16).to_be_bytes());
+        payload.extend_from_slice(prefix.as_bytes());
+        payload.extend_from_slice(&2040i32.to_be_bytes()); // data_version
+        payload.extend_from_slice(&0i32.to_be_bytes()); // unknown2
+        payload.extend_from_slice(&0i32.to_be_bytes()); // unknown3
+
+        // === 그룹 메타데이터 ===
+        payload.extend_from_slice(&1i16.to_be_bytes()); // group_count = 1
+
+        // Group: "TxGroup" with 1 VarChar field, 1 row
+        let group_name = "TxGroup";
+        payload.extend_from_slice(&(group_name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(group_name.as_bytes());
+        let type_name = "ByteArraySet";
+        payload.extend_from_slice(&(type_name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(type_name.as_bytes());
+        payload.extend_from_slice(&0u16.to_be_bytes()); // subtype = ""
+
+        // 주 필드 1개 (VarChar "RESULT")
+        payload.extend_from_slice(&1i32.to_be_bytes()); // field_count1
+        payload.extend_from_slice(&1i32.to_be_bytes()); // kind = Normal
+        payload.extend_from_slice(&12i32.to_be_bytes()); // sql_type = VarChar
+        let fname = "RESULT";
+        payload.extend_from_slice(&(fname.len() as u16).to_be_bytes());
+        payload.extend_from_slice(fname.as_bytes());
+        payload.push(0x01); // nullable
+
+        // 보조 필드 0개
+        payload.extend_from_slice(&0i32.to_be_bytes());
+
+        // 데이터셋 1개, 1행
+        payload.extend_from_slice(&1i32.to_be_bytes()); // ds_count
+        payload.extend_from_slice(&20i32.to_be_bytes()); // byte_size
+        payload.extend_from_slice(&1i32.to_be_bytes()); // row_count = 1
+        let dk = "ds0";
+        payload.extend_from_slice(&(dk.len() as u16).to_be_bytes());
+        payload.extend_from_slice(dk.as_bytes());
+
+        // === total_data_size ===
+        payload.extend_from_slice(&20i32.to_be_bytes());
+
+        // === RecordInfo (1행) ===
+        let row_data = {
+            let mut v = Vec::new();
+            v.push(0x00); // VarChar not null
+            let val = "SUCCESS";
+            v.extend_from_slice(&(val.len() as u16).to_be_bytes());
+            v.extend_from_slice(val.as_bytes());
+            v
+        };
+        payload.extend_from_slice(&(row_data.len() as i32).to_be_bytes()); // length
+        payload.extend_from_slice(&0i32.to_be_bytes()); // offset
+
+        // === 데이터 blob ===
+        payload.extend_from_slice(&row_data);
+
+        // TransactionResponse 구성
+        let resp = TransactionResponse {
+            header: OzMessageHeader {
+                magic: MAGIC,
+                class_name: "TransactionResult".to_string(),
+                fields: vec![("s".to_string(), "sess99".to_string())],
+            },
+            raw_payload: payload,
+        };
+
+        let dm = resp.try_parse_as_data_module().unwrap();
+        assert_eq!(dm.header.class_name, "TransactionResult");
+        assert_eq!(dm.header.get_field("s"), Some("sess99"));
+        assert_eq!(dm.meta.version, 17);
+        assert_eq!(dm.groups.len(), 1);
+        assert_eq!(dm.groups[0].name, "TxGroup");
+        assert_eq!(dm.datasets.len(), 1);
+        let (group_name, rows) = &dm.datasets[0];
+        assert_eq!(group_name, "TxGroup");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0][0],
+            (
+                "RESULT".to_string(),
+                FieldValue::String("SUCCESS".to_string())
+            )
+        );
     }
 }
