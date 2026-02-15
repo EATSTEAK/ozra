@@ -82,22 +82,27 @@ impl<'a> BufReader<'a> {
         Ok(())
     }
 
+    /// `M` 바이트를 읽어 고정 크기 배열로 반환합니다.
+    ///
+    /// `ensure()`로 길이를 보장하므로 `try_into().unwrap()`은 안전합니다.
+    #[inline]
+    fn read_array<const M: usize>(&mut self) -> Result<[u8; M]> {
+        self.ensure(M)?;
+        let arr = self.buf[self.offset..self.offset + M].try_into().unwrap();
+        self.offset += M;
+        Ok(arr)
+    }
+
     /// 1바이트 부호 없는 정수를 읽습니다.
     pub fn read_u8(&mut self) -> Result<u8> {
-        self.ensure(1)?;
-        let v = self.buf[self.offset];
-        self.offset += 1;
-        Ok(v)
+        self.read_array::<1>().map(u8::from_be_bytes)
     }
 
     /// 1바이트 부호 있는 정수를 읽습니다.
     ///
     /// TinyInt(`SqlType`) 등 signed byte 값 읽기에 사용됩니다.
     pub fn read_i8(&mut self) -> Result<i8> {
-        self.ensure(1)?;
-        let v = self.buf[self.offset] as i8;
-        self.offset += 1;
-        Ok(v)
+        self.read_array::<1>().map(i8::from_be_bytes)
     }
 
     /// 1바이트를 읽어 불리언으로 반환합니다 (`!= 0`이면 `true`).
@@ -107,102 +112,44 @@ impl<'a> BufReader<'a> {
 
     /// 2바이트 Big Endian 부호 있는 정수를 읽습니다.
     pub fn read_i16(&mut self) -> Result<i16> {
-        self.ensure(2)?;
-        let v = i16::from_be_bytes([self.buf[self.offset], self.buf[self.offset + 1]]);
-        self.offset += 2;
-        Ok(v)
+        self.read_array::<2>().map(i16::from_be_bytes)
     }
 
     /// 2바이트 Big Endian 부호 없는 정수를 읽습니다.
     pub fn read_u16(&mut self) -> Result<u16> {
-        self.ensure(2)?;
-        let v = u16::from_be_bytes([self.buf[self.offset], self.buf[self.offset + 1]]);
-        self.offset += 2;
-        Ok(v)
+        self.read_array::<2>().map(u16::from_be_bytes)
     }
 
     /// 4바이트 Big Endian 부호 있는 정수를 읽습니다.
     pub fn read_i32(&mut self) -> Result<i32> {
-        self.ensure(4)?;
-        let v = i32::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-        ]);
-        self.offset += 4;
-        Ok(v)
+        self.read_array::<4>().map(i32::from_be_bytes)
     }
 
     /// 4바이트 Big Endian 부호 없는 정수를 읽습니다.
     pub fn read_u32(&mut self) -> Result<u32> {
-        self.ensure(4)?;
-        let v = u32::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-        ]);
-        self.offset += 4;
-        Ok(v)
+        self.read_array::<4>().map(u32::from_be_bytes)
     }
 
     /// 8바이트 Big Endian 부호 있는 정수를 읽습니다.
     pub fn read_i64(&mut self) -> Result<i64> {
-        self.ensure(8)?;
-        let v = i64::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-            self.buf[self.offset + 4],
-            self.buf[self.offset + 5],
-            self.buf[self.offset + 6],
-            self.buf[self.offset + 7],
-        ]);
-        self.offset += 8;
-        Ok(v)
+        self.read_array::<8>().map(i64::from_be_bytes)
     }
 
     /// 8바이트 Big Endian 부호 없는 정수를 읽습니다.
     ///
     /// 대용량 바이너리 크기 읽기 등에 사용됩니다.
-    /// `ensure()`로 길이를 보장하므로 `try_into().unwrap()`은 안전합니다.
     pub fn read_u64(&mut self) -> Result<u64> {
-        self.ensure(8)?;
-        let v = u64::from_be_bytes(self.buf[self.offset..self.offset + 8].try_into().unwrap());
-        self.offset += 8;
-        Ok(v)
+        self.read_array::<8>().map(u64::from_be_bytes)
     }
 
     /// 4바이트 Big Endian IEEE 754 단정밀도 부동소수점을 읽습니다.
     pub fn read_f32(&mut self) -> Result<f32> {
-        self.ensure(4)?;
-        let v = f32::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-        ]);
-        self.offset += 4;
-        Ok(v)
+        self.read_array::<4>().map(f32::from_be_bytes)
     }
 
     /// 8바이트 Big Endian IEEE 754 배정밀도 부동소수점을 읽습니다.
     pub fn read_f64(&mut self) -> Result<f64> {
-        self.ensure(8)?;
-        let v = f64::from_be_bytes([
-            self.buf[self.offset],
-            self.buf[self.offset + 1],
-            self.buf[self.offset + 2],
-            self.buf[self.offset + 3],
-            self.buf[self.offset + 4],
-            self.buf[self.offset + 5],
-            self.buf[self.offset + 6],
-            self.buf[self.offset + 7],
-        ]);
-        self.offset += 8;
-        Ok(v)
+        self.read_array::<8>().map(f64::from_be_bytes)
     }
 
     /// 지정 길이의 원시 바이트 슬라이스를 zero-copy로 읽습니다.
@@ -354,22 +301,25 @@ impl<const N: usize> BufWriter<N> {
         Ok(())
     }
 
+    /// `M` 바이트 고정 크기 배열을 씁니다.
+    #[inline]
+    fn write_array<const M: usize>(&mut self, bytes: [u8; M]) -> Result<()> {
+        self.ensure(M)?;
+        self.buf[self.offset..self.offset + M].copy_from_slice(&bytes);
+        self.offset += M;
+        Ok(())
+    }
+
     /// 1바이트 부호 없는 정수를 씁니다.
     pub fn write_u8(&mut self, v: u8) -> Result<()> {
-        self.ensure(1)?;
-        self.buf[self.offset] = v;
-        self.offset += 1;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 1바이트 부호 있는 정수를 씁니다.
     ///
     /// Transaction 파라미터 직렬화 등에 사용됩니다.
     pub fn write_i8(&mut self, v: i8) -> Result<()> {
-        self.ensure(1)?;
-        self.buf[self.offset] = v as u8;
-        self.offset += 1;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 1바이트 불리언을 씁니다 (`true` → `1`, `false` → `0`).
@@ -379,74 +329,42 @@ impl<const N: usize> BufWriter<N> {
 
     /// 2바이트 Big Endian 부호 있는 정수를 씁니다.
     pub fn write_i16(&mut self, v: i16) -> Result<()> {
-        self.ensure(2)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 2].copy_from_slice(&bytes);
-        self.offset += 2;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 2바이트 Big Endian 부호 없는 정수를 씁니다.
     pub fn write_u16(&mut self, v: u16) -> Result<()> {
-        self.ensure(2)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 2].copy_from_slice(&bytes);
-        self.offset += 2;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 4바이트 Big Endian 부호 있는 정수를 씁니다.
     pub fn write_i32(&mut self, v: i32) -> Result<()> {
-        self.ensure(4)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 4].copy_from_slice(&bytes);
-        self.offset += 4;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 4바이트 Big Endian 부호 없는 정수를 씁니다.
     pub fn write_u32(&mut self, v: u32) -> Result<()> {
-        self.ensure(4)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 4].copy_from_slice(&bytes);
-        self.offset += 4;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 8바이트 Big Endian 부호 있는 정수를 씁니다.
     pub fn write_i64(&mut self, v: i64) -> Result<()> {
-        self.ensure(8)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
-        self.offset += 8;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 8바이트 Big Endian 부호 없는 정수를 씁니다.
     pub fn write_u64(&mut self, v: u64) -> Result<()> {
-        self.ensure(8)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
-        self.offset += 8;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 4바이트 Big Endian IEEE 754 단정밀도 부동소수점을 씁니다.
     pub fn write_f32(&mut self, v: f32) -> Result<()> {
-        self.ensure(4)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 4].copy_from_slice(&bytes);
-        self.offset += 4;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// 8바이트 Big Endian IEEE 754 배정밀도 부동소수점을 씁니다.
     pub fn write_f64(&mut self, v: f64) -> Result<()> {
-        self.ensure(8)?;
-        let bytes = v.to_be_bytes();
-        self.buf[self.offset..self.offset + 8].copy_from_slice(&bytes);
-        self.offset += 8;
-        Ok(())
+        self.write_array(v.to_be_bytes())
     }
 
     /// UTF-16BE 문자열을 씁니다.
