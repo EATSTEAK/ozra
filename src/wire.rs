@@ -282,7 +282,8 @@ impl<'a> BufReader<'a> {
 
 /// 고정 크기 버퍼에 순차적 Big Endian 바이너리 쓰기를 제공합니다.
 ///
-/// 기본적으로 [`REQUEST_FRAME_SIZE`] (9,545바이트) 크기의 0-초기화 버퍼를 사용합니다.
+/// const generic 파라미터 `N`으로 버퍼 크기를 지정할 수 있습니다.
+/// 기본값은 [`REQUEST_FRAME_SIZE`] (9,545바이트)이며, 0-초기화 버퍼를 사용합니다.
 /// 모든 쓰기 메서드는 버퍼 경계를 초과하면 [`OzError::BufferOverflow`]를 반환합니다.
 ///
 /// # 예시
@@ -290,20 +291,46 @@ impl<'a> BufReader<'a> {
 /// ```
 /// use ozra::wire::BufWriter;
 ///
+/// // 기본 크기 (REQUEST_FRAME_SIZE)
 /// let mut writer = BufWriter::new();
 /// writer.write_u32(0x00002711).unwrap();
 /// assert_eq!(&writer.as_bytes()[..4], &[0x00, 0x00, 0x27, 0x11]);
+///
+/// // 커스텀 크기
+/// let mut small_writer = BufWriter::<64>::with_capacity();
+/// small_writer.write_u8(0x42).unwrap();
 /// ```
-pub struct BufWriter {
+pub struct BufWriter<const N: usize = { REQUEST_FRAME_SIZE }> {
     buf: Vec<u8>,
     offset: usize,
 }
 
+/// 기본 크기([`REQUEST_FRAME_SIZE`])의 `BufWriter`를 위한 편의 생성자입니다.
 impl BufWriter {
     /// [`REQUEST_FRAME_SIZE`] (9,545바이트) 크기의 0-초기화 버퍼를 생성합니다.
     pub fn new() -> Self {
         Self {
             buf: vec![0u8; REQUEST_FRAME_SIZE],
+            offset: 0,
+        }
+    }
+}
+
+impl<const N: usize> BufWriter<N> {
+    /// `N` 바이트 크기의 0-초기화 버퍼를 생성합니다.
+    ///
+    /// # 예시
+    ///
+    /// ```
+    /// use ozra::wire::BufWriter;
+    ///
+    /// let mut writer = BufWriter::<128>::with_capacity();
+    /// writer.write_u8(0x42).unwrap();
+    /// assert_eq!(writer.as_bytes().len(), 128);
+    /// ```
+    pub fn with_capacity() -> Self {
+        Self {
+            buf: vec![0u8; N],
             offset: 0,
         }
     }
