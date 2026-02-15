@@ -96,7 +96,7 @@ impl OzRequest for DataModuleRequest {
 
 /// CompactDataModule 요청 (서브타입 382, `Kn.C3L`)
 ///
-/// [`DataModuleRequest`](380)의 간결 버전으로, 파라미터·플래그·trailing constants를 생략합니다.
+/// [`DataModuleRequest`]의 간결 버전(서브타입 380)으로, 파라미터·플래그·trailing constants를 생략합니다.
 /// 서버 응답 형식은 380과 동일한 [`DataModuleResponse`]입니다.
 ///
 /// # 380 vs 382 차이

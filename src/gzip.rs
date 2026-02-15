@@ -58,7 +58,7 @@ const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256MB
 ///
 /// - 블록 크기 헤더를 읽기에 충분한 데이터가 없을 때
 /// - GZIP 해제에 실패할 때
-/// - 해제된 전체 크기가 [`MAX_DECOMPRESSED_SIZE`] (256MB)를 초과할 때
+/// - 해제된 전체 크기가 `MAX_DECOMPRESSED_SIZE` (256MB)를 초과할 때
 ///
 /// # 예시
 ///

@@ -45,7 +45,7 @@ use crate::wire::{BufReader, BufWriter};
 ///
 /// # 에러
 ///
-/// 바이너리 데이터가 부족하면 [`OzError::UnexpectedEof`](crate::error::OzError::UnexpectedEof)를 반환합니다.
+/// 바이너리 데이터가 부족하면 [`OzError::UnexpectedEof`]를 반환합니다.
 pub fn read_field_value(reader: &mut BufReader, sql_type: SqlType) -> Result<FieldValue> {
     match sql_type {
         // BasicIntField: INTEGER(4), TINYINT(-6)
