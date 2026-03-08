@@ -91,10 +91,6 @@ pub enum OzError {
     #[error("unexpected HTTP status: {status}")]
     HttpStatus { status: u16 },
 
-    /// Repository 알 수 없는 상태 코드
-    #[error("unknown repository status: {status}")]
-    UnknownRepositoryStatus { status: i32 },
-
     /// Repository 파일을 찾을 수 없음
     #[error("repository file not found: {path}")]
     RepositoryNotFound { path: String },
@@ -589,12 +585,6 @@ mod tests {
     fn test_not_authenticated_display() {
         let err = OzError::NotAuthenticated;
         assert_eq!(err.to_string(), "not authenticated: must login first");
-    }
-
-    #[test]
-    fn test_unknown_repository_status_display() {
-        let err = OzError::UnknownRepositoryStatus { status: 99 };
-        assert_eq!(err.to_string(), "unknown repository status: 99");
     }
 
     #[test]
