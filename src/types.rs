@@ -10,17 +10,28 @@ use crate::error::OzError;
 /// Java JDBC 타입 코드와 동일하며, 각 코드는 DataModule 응답에서
 /// 필드 값의 바이너리 인코딩 방식을 결정합니다.
 ///
-/// 필드 클래스 매핑:
-/// - **BasicStringField**: [`Char`](Self::Char), [`VarChar`](Self::VarChar), [`LongVarChar`](Self::LongVarChar), [`Clob`](Self::Clob)
-/// - **BasicStringField2** (boolean prefix 없음): [`Numeric`](Self::Numeric), [`Decimal`](Self::Decimal)
-/// - **BasicSmallField** (4B, sentinel null): [`TinyInt`](Self::TinyInt), [`SmallInt`](Self::SmallInt)
-/// - **BasicIntField** (bool + 4B): [`Integer`](Self::Integer)
-/// - **BasicLongField** (bool + 8B): [`BigInt`](Self::BigInt)
-/// - **BasicFloatField** (bool + 4B): [`Real`](Self::Real)
-/// - **BasicDoubleField** (bool + 8B): [`Float`](Self::Float), [`Double`](Self::Double)
-/// - **BasicBooleanField** (1B, null 없음): [`Bit`](Self::Bit)
-/// - **BasicDateField** (8B, sentinel null): [`Date`](Self::Date), [`Time`](Self::Time), [`Timestamp`](Self::Timestamp)
-/// - **BasicBinaryField** (length-prefixed): [`Binary`](Self::Binary), [`VarBinary`](Self::VarBinary), [`LongVarBinary`](Self::LongVarBinary), [`Blob`](Self::Blob)
+/// ## 필드 클래스 매핑 및 인코딩 규칙
+///
+/// | 필드 클래스 | SQL 타입 | 바이너리 형식 | Null 판별 |
+/// |---|---|---|---|
+/// | BasicSmallField | [`TinyInt`](Self::TinyInt), [`SmallInt`](Self::SmallInt) | `i32(4B)` | `== i32::MIN` |
+/// | BasicIntField | [`Integer`](Self::Integer) | `bool(1B) + i32(4B)` | `bool == true` |
+/// | BasicBigField | [`BigInt`](Self::BigInt) | `bool(1B) + i64(8B)` | `bool == true` |
+/// | BasicDoubleField | [`Float`](Self::Float), [`Double`](Self::Double) | `bool(1B) + f64(8B)` | `bool == true` |
+/// | BasicFloatField | [`Real`](Self::Real) | `bool(1B) + f32(4B)` (read) / `bool(1B) + f64(8B)` (write) | `bool == true` |
+/// | BasicStringField | [`Char`](Self::Char), [`VarChar`](Self::VarChar), [`LongVarChar`](Self::LongVarChar), [`Clob`](Self::Clob) | `bool(1B) + UTF(2+NB)` | `bool == true` |
+/// | BasicStringField2 | [`Numeric`](Self::Numeric), [`Decimal`](Self::Decimal) | `UTF(2+NB)` (bool 없음) | 빈 문자열 |
+/// | BasicDateField | [`Date`](Self::Date), [`Time`](Self::Time), [`Timestamp`](Self::Timestamp) | `i64(8B)` | `hi == i32::MIN && lo == 0` |
+/// | BasicBinaryField | [`Binary`](Self::Binary), [`VarBinary`](Self::VarBinary), [`LongVarBinary`](Self::LongVarBinary), [`Blob`](Self::Blob) | `i32(4B) len + bytes` | `len <= 0` |
+/// | BasicBooleanField | [`Bit`](Self::Bit) | `u8(1B)` | null 없음 |
+///
+/// ## REAL 타입의 비대칭성
+///
+/// [`Real`](Self::Real) 타입은 **읽기 경로(read)**와 **쓰기 경로(write)**에서 서로 다른 바이너리 포맷을 사용합니다:
+/// - **쓰기 경로 (Transaction IByteArrayDataSet)**: `f64` (8 bytes)를 사용합니다.
+/// - **읽기 경로 (DataModule)**: `f32` (4 bytes)를 사용합니다.
+///
+/// 이 비대칭성은 OZ 프로토콜의 의도적인 설계입니다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum SqlType {
@@ -51,7 +62,11 @@ pub enum SqlType {
     BigInt = -5,
 
     // 부동소수점 계열
-    /// REAL (JDBC 코드 7) — BasicFloatField (bool + 4B)
+    /// REAL (JDBC 코드 7) — BasicFloatField
+    ///
+    /// **비대칭적 인코딩**:
+    /// - 읽기 경로(DataModule): `bool(1B) + f32(4B)`
+    /// - 쓰기 경로(Transaction): `bool(1B) + f64(8B)`
     Real = 7,
     /// FLOAT (JDBC 코드 6) — BasicDoubleField (bool + 8B)
     Float = 6,
@@ -62,22 +77,43 @@ pub enum SqlType {
     /// BIT (JDBC 코드 -7) — BasicBooleanField (1B, null 없음)
     Bit = -7,
 
-    // 날짜/시간 계열 (8B epoch ms, sentinel null)
-    /// DATE (JDBC 코드 91)
+    // 날짜/시간 계열 (8B epoch ms)
+    /// DATE (JDBC 코드 91) — BasicDateField
+    ///
+    /// 인코딩: `i64(8B)` epoch milliseconds
+    /// Null 판별: `hi == i32::MIN (0x80000000) && lo == 0`
     Date = 91,
-    /// TIME (JDBC 코드 92)
+    /// TIME (JDBC 코드 92) — BasicDateField
+    ///
+    /// 인코딩: `i64(8B)` epoch milliseconds
+    /// Null 판별: `hi == i32::MIN (0x80000000) && lo == 0`
     Time = 92,
-    /// TIMESTAMP (JDBC 코드 93)
+    /// TIMESTAMP (JDBC 코드 93) — BasicDateField
+    ///
+    /// 인코딩: `i64(8B)` epoch milliseconds
+    /// Null 판별: `hi == i32::MIN (0x80000000) && lo == 0`
     Timestamp = 93,
 
-    // 바이너리 계열 (length-prefixed)
-    /// BINARY (JDBC 코드 -2)
+    // 바이너리 계열
+    /// BINARY (JDBC 코드 -2) — BasicBinaryField
+    ///
+    /// 인코딩: `i32(4B) length + bytes`
+    /// Null 판별: `length <= 0`
     Binary = -2,
-    /// VARBINARY (JDBC 코드 -3)
+    /// VARBINARY (JDBC 코드 -3) — BasicBinaryField
+    ///
+    /// 인코딩: `i32(4B) length + bytes`
+    /// Null 판별: `length <= 0`
     VarBinary = -3,
-    /// LONGVARBINARY (JDBC 코드 -4)
+    /// LONGVARBINARY (JDBC 코드 -4) — BasicBinaryField
+    ///
+    /// 인코딩: `i32(4B) length + bytes`
+    /// Null 판별: `length <= 0`
     LongVarBinary = -4,
-    /// BLOB (JDBC 코드 2004)
+    /// BLOB (JDBC 코드 2004) — BasicBinaryField
+    ///
+    /// 인코딩: `i32(4B) length + bytes`
+    /// Null 판별: `length <= 0`
     Blob = 2004,
 }
 
@@ -305,9 +341,8 @@ impl OzMessageHeader {
 ///
 /// ## 데이터 파싱에서의 역할
 ///
-/// - [`sql_type`](Self::sql_type) — 바이너리 인코딩 방식을 결정합니다
-///   (예: `VarChar`면 `bool(1B) + UTF(2+NB)`, `Integer`면 `bool(1B) + i32(4B)`,
-///   `SmallInt`/`TinyInt`면 `i32(4B)` sentinel)
+/// - [`sql_type`](Self::sql_type) — 바이너리 인코딩 방식을 결정합니다.
+///   각 SQL 타입별 인코딩 규칙은 [`SqlType`](crate::types::SqlType) 문서를 참조하세요.
 /// - [`nullable`](Self::nullable) — null 처리 방식을 결정합니다.
 ///   SQL 타입에 따라 sentinel null (`i32::MIN`), boolean prefix, 또는 빈 문자열 등
 ///   다양한 null 판별 방식이 사용됩니다.
