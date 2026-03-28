@@ -13,8 +13,8 @@ use crate::error::OzError;
 /// 필드 클래스 매핑:
 /// - **BasicStringField**: [`Char`](Self::Char), [`VarChar`](Self::VarChar), [`LongVarChar`](Self::LongVarChar), [`Clob`](Self::Clob)
 /// - **BasicStringField2** (boolean prefix 없음): [`Numeric`](Self::Numeric), [`Decimal`](Self::Decimal)
-/// - **BasicIntField** (4B, sentinel null): [`Integer`](Self::Integer), [`TinyInt`](Self::TinyInt)
-/// - **BasicSmallField** (bool + 4B): [`SmallInt`](Self::SmallInt)
+/// - **BasicSmallField** (4B, sentinel null): [`TinyInt`](Self::TinyInt), [`SmallInt`](Self::SmallInt)
+/// - **BasicIntField** (bool + 4B): [`Integer`](Self::Integer)
 /// - **BasicLongField** (bool + 8B): [`BigInt`](Self::BigInt)
 /// - **BasicFloatField** (bool + 4B): [`Real`](Self::Real)
 /// - **BasicDoubleField** (bool + 8B): [`Float`](Self::Float), [`Double`](Self::Double)
@@ -41,11 +41,11 @@ pub enum SqlType {
     Decimal = 3,
 
     // 정수 계열
-    /// TINYINT (JDBC 코드 -6) — BasicSmallField (4B, sentinel null)
+    /// TINYINT (JDBC 코드 -6) — BasicSmallField (4B i32, null = i32::MIN sentinel)
     TinyInt = -6,
-    /// SMALLINT (JDBC 코드 5) — BasicSmallField (4B, sentinel null)
+    /// SMALLINT (JDBC 코드 5) — BasicSmallField (4B i32, null = i32::MIN sentinel)
     SmallInt = 5,
-    /// INTEGER (JDBC 코드 4) — BasicIntField (bool + 4B)
+    /// INTEGER (JDBC 코드 4) — BasicIntField (bool + 4B i32, null = bool == true)
     Integer = 4,
     /// BIGINT (JDBC 코드 -5) — BasicLongField (bool + 8B)
     BigInt = -5,
@@ -306,7 +306,8 @@ impl OzMessageHeader {
 /// ## 데이터 파싱에서의 역할
 ///
 /// - [`sql_type`](Self::sql_type) — 바이너리 인코딩 방식을 결정합니다
-///   (예: `VarChar`면 `bool(1B) + UTF(2+NB)`, `Integer`면 `bool(1B) + i32(4B)`)
+///   (예: `VarChar`면 `bool(1B) + UTF(2+NB)`, `Integer`면 `bool(1B) + i32(4B)`,
+///   `SmallInt`/`TinyInt`면 `i32(4B)` sentinel)
 /// - [`nullable`](Self::nullable) — null 처리 방식을 결정합니다.
 ///   SQL 타입에 따라 sentinel null (`i32::MIN`), boolean prefix, 또는 빈 문자열 등
 ///   다양한 null 판별 방식이 사용됩니다.
@@ -856,12 +857,18 @@ mod tests {
     #[test]
     fn test_field_value_to_json_double_infinity() {
         let json: serde_json::Value = (&FieldValue::Double(f64::INFINITY)).into();
-        assert!(json.is_null(), "Double Infinity should convert to JSON null");
+        assert!(
+            json.is_null(),
+            "Double Infinity should convert to JSON null"
+        );
     }
 
     #[test]
     fn test_field_value_to_json_double_neg_infinity() {
         let json: serde_json::Value = (&FieldValue::Double(f64::NEG_INFINITY)).into();
-        assert!(json.is_null(), "Double -Infinity should convert to JSON null");
+        assert!(
+            json.is_null(),
+            "Double -Infinity should convert to JSON null"
+        );
     }
 }

@@ -636,7 +636,9 @@ mod tests {
         assert!(!is_null);
         let name_val = reader.read_utf().unwrap();
         assert_eq!(name_val, "Alice");
-        // Integer: sentinel i32(30), no bool prefix
+        // Integer: bool prefix + i32
+        let age_null = reader.read_bool().unwrap();
+        assert!(!age_null);
         let age_val = reader.read_i32().unwrap();
         assert_eq!(age_val, 30);
 
@@ -645,7 +647,9 @@ mod tests {
         assert!(!is_null);
         let name_val = reader.read_utf().unwrap();
         assert_eq!(name_val, "Bob");
-        // Integer: sentinel i32(25), no bool prefix
+        // Integer: bool prefix + i32
+        let age_null = reader.read_bool().unwrap();
+        assert!(!age_null);
         let age_val = reader.read_i32().unwrap();
         assert_eq!(age_val, 25);
     }
@@ -742,7 +746,9 @@ mod tests {
         let _nullable = reader.read_bool().unwrap();
         let row_count1 = reader.read_i32().unwrap();
         assert_eq!(row_count1, 1);
-        // Integer: sentinel i32(1), no bool prefix
+        // Integer: bool prefix + i32
+        let id_null = reader.read_bool().unwrap();
+        assert!(!id_null);
         let id_val = reader.read_i32().unwrap();
         assert_eq!(id_val, 1);
 
@@ -1045,9 +1051,9 @@ mod tests {
         // VarChar null: bool(true)
         let is_null = reader.read_bool().unwrap();
         assert!(is_null);
-        // Integer null: sentinel i32::MIN
-        let int_null = reader.read_i32().unwrap();
-        assert_eq!(int_null, i32::MIN);
+        // Integer null: bool(true)
+        let int_null = reader.read_bool().unwrap();
+        assert!(int_null);
     }
 
     // ── TransactionResponse 편의 메서드 테스트 ──────────────────────────

@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(header.get_field("cv"), Some(CLIENT_VERSION));
         assert_eq!(header.get_field("d"), Some("-1"));
         assert_eq!(header.get_field("r"), Some("1"));
-        assert_eq!(header.get_field("rv"), Some("268435456"));
+        assert_eq!(header.get_field("rv"), Some("65536"));
         assert_eq!(header.fields.len(), 16);
     }
 }

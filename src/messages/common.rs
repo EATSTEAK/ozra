@@ -40,7 +40,7 @@ use crate::wire::{BufReader, BufWriter};
 /// | `t`, `i`, `o`, `z`, `j` | 예약 필드 | "" |
 /// | `d` | 디버그 플래그 | "-1" |
 /// | `r` | 재시도 플래그 | "1" |
-/// | `rv` | 버전 플래그 | "268435456" |
+/// | `rv` | 버전 플래그 | "65536" |
 /// | `xi`, `xm`, `xh`, `pi` | 확장 필드 | "" |
 fn common_fields<'a>(
     username: &'a str,

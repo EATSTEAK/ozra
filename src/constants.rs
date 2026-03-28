@@ -19,8 +19,8 @@ pub const FIELD_D_DEFAULT: &str = "-1";
 /// 공통 헤더 필드의 기본값: "r" 필드
 pub const FIELD_R_DEFAULT: &str = "1";
 
-/// 공통 헤더 필드의 기본값: "rv" 필드 (268435456 = 0x10000000)
-pub const FIELD_RV_DEFAULT: &str = "268435456";
+/// 공통 헤더 필드의 기본값: "rv" 필드 (65536 = 0x10000)
+pub const FIELD_RV_DEFAULT: &str = "65536";
 
 /// 응답 파싱 시 허용되는 최대 필드 수 (DoS 방어)
 pub const MAX_FIELD_COUNT: usize = 10_000;

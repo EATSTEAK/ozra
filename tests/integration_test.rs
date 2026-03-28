@@ -66,7 +66,7 @@ fn roundtrip_login_request_header() {
     assert_eq!(header.get_field("cv"), Some(CLIENT_VERSION));
     assert_eq!(header.get_field("d"), Some("-1"));
     assert_eq!(header.get_field("r"), Some("1"));
-    assert_eq!(header.get_field("rv"), Some("268435456"));
+    assert_eq!(header.get_field("rv"), Some("65536"));
     // 빈 필드 검증
     assert_eq!(header.get_field("t"), Some(""));
     assert_eq!(header.get_field("i"), Some(""));
@@ -382,11 +382,10 @@ fn field_values_consecutive_read_offset_accuracy() {
     ];
 
     let mut w = BufWriter::new();
-    // SmallInt = 7 (bool+i32 = 5B)
-    w.write_bool(false).unwrap();
+    // SmallInt = 7 (sentinel i32 = 4B)
     w.write_i32(7).unwrap();
-    // Integer = NULL (sentinel i32::MIN = 4B)
-    w.write_i32(i32::MIN).unwrap();
+    // Integer = NULL (bool prefix = true = 1B)
+    w.write_bool(true).unwrap();
     // VarChar = "test" (1B + 2B + 4B = 7B)
     w.write_bool(false).unwrap();
     w.write_utf("test").unwrap();
@@ -399,8 +398,8 @@ fn field_values_consecutive_read_offset_accuracy() {
 
     let data: Vec<u8> = w.as_bytes()[..w.offset()].to_vec();
 
-    // 예상 총 바이트: 5 + 4 + 7 + 6 + 1 + 8 = 31
-    assert_eq!(data.len(), 31);
+    // 예상 총 바이트: 4 + 1 + 7 + 6 + 1 + 8 = 27
+    assert_eq!(data.len(), 27);
 
     let mut r = BufReader::new(&data);
     let row = read_row(&mut r, &fields).unwrap();
@@ -515,7 +514,7 @@ fn error_check_error_ok_on_normal_response() {
 
 #[test]
 fn error_field_read_on_insufficient_buffer() {
-    // INTEGER 읽기: i32(4B) 필요한데 빈 버퍼
+    // INTEGER 읽기: bool(1B) + i32(4B) 필요한데 빈 버퍼
     let data: &[u8] = &[];
     let mut r = BufReader::new(data);
     let err = read_field_value(&mut r, SqlType::Integer).unwrap_err();
@@ -524,8 +523,8 @@ fn error_field_read_on_insufficient_buffer() {
 
 #[test]
 fn error_field_read_partial_integer() {
-    // INTEGER: i32(4B 필요) but only 3B 제공
-    let data: &[u8] = &[0x00, 0x00, 0x01]; // 3B (insufficient for i32)
+    // INTEGER: bool(1B) + i32(4B) 필요, bool은 읽히지만 i32 3B만 제공
+    let data: &[u8] = &[0x00, 0x00, 0x00, 0x01]; // bool(false) + 3B (insufficient for i32)
     let mut r = BufReader::new(data);
     let err = read_field_value(&mut r, SqlType::Integer).unwrap_err();
     assert!(matches!(err, OzError::UnexpectedEof { .. }));
@@ -687,18 +686,18 @@ fn wire_roundtrip_complex_message() {
 fn all_sql_types_field_read_roundtrip() {
     // 모든 SQL 타입의 필드 값을 작성하고 읽어 검증
     let test_cases: Vec<(SqlType, Vec<u8>, FieldValue)> = vec![
-        // SmallInt normal (bool prefix + i32)
+        // SmallInt normal (sentinel i32, no bool prefix)
         (
             SqlType::SmallInt,
-            {
-                let mut v = vec![0x00]; // not null
-                v.extend_from_slice(&42i32.to_be_bytes());
-                v
-            },
+            42i32.to_be_bytes().to_vec(),
             FieldValue::Int(42),
         ),
-        // SmallInt null (bool prefix = true)
-        (SqlType::SmallInt, vec![0x01], FieldValue::Null),
+        // SmallInt null (sentinel i32::MIN)
+        (
+            SqlType::SmallInt,
+            i32::MIN.to_be_bytes().to_vec(),
+            FieldValue::Null,
+        ),
         // TinyInt
         (
             SqlType::TinyInt,
@@ -716,9 +715,10 @@ fn all_sql_types_field_read_roundtrip() {
         assert_eq!(value, expected, "Failed for {:?}", sql_type);
     }
 
-    // Integer sentinel i32 (no bool prefix)
+    // Integer normal (bool prefix + i32)
     {
-        let data = 100i32.to_be_bytes().to_vec();
+        let mut data = vec![0x00]; // not null
+        data.extend_from_slice(&100i32.to_be_bytes());
         let mut r = BufReader::new(&data);
         assert_eq!(
             read_field_value(&mut r, SqlType::Integer).unwrap(),
@@ -726,9 +726,9 @@ fn all_sql_types_field_read_roundtrip() {
         );
     }
 
-    // Integer null (sentinel i32::MIN)
+    // Integer null (bool prefix = true)
     {
-        let data = i32::MIN.to_be_bytes().to_vec();
+        let data = vec![0x01]; // null
         let mut r = BufReader::new(&data);
         assert_eq!(
             read_field_value(&mut r, SqlType::Integer).unwrap(),
@@ -1107,10 +1107,11 @@ fn build_varchar_int_row(text: &str, text_null: bool, int_val: i32, int_null: bo
         row.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
         row.extend_from_slice(bytes);
     }
-    // Integer (sentinel i32, no bool prefix)
+    // Integer (bool prefix + i32)
     if int_null {
-        row.extend_from_slice(&i32::MIN.to_be_bytes()); // null sentinel
+        row.push(0x01); // bool = true → null
     } else {
+        row.push(0x00); // bool = false → not null
         row.extend_from_slice(&int_val.to_be_bytes());
     }
     row
@@ -1146,17 +1147,9 @@ fn build_test_dm_response_multi_group() -> Vec<u8> {
     buf.extend_from_slice(&1i32.to_be_bytes()); // 1 row
     write_utf_raw(&mut buf, "d1");
 
-    // 행 데이터 (SmallInt = bool prefix + i32)
-    let g1_row1 = {
-        let mut v = vec![0x00]; // not null
-        v.extend_from_slice(&100i32.to_be_bytes());
-        v
-    };
-    let g1_row2 = {
-        let mut v = vec![0x00]; // not null
-        v.extend_from_slice(&200i32.to_be_bytes());
-        v
-    };
+    // 행 데이터 (SmallInt = sentinel i32, no bool prefix)
+    let g1_row1 = 100i32.to_be_bytes().to_vec();
+    let g1_row2 = 200i32.to_be_bytes().to_vec();
 
     let mut g2_row = Vec::new();
     g2_row.push(0x00); // VarChar not null
@@ -1295,12 +1288,8 @@ fn build_test_dm_response_with_secondary_fields() -> Vec<u8> {
     buf.extend_from_slice(&1i32.to_be_bytes()); // 1 row
     write_utf_raw(&mut buf, "d0");
 
-    // 행 데이터: SmallInt = 999 (bool prefix + i32)
-    let row = {
-        let mut v = vec![0x00]; // not null
-        v.extend_from_slice(&999i32.to_be_bytes());
-        v
-    };
+    // 행 데이터: SmallInt = 999 (sentinel i32, no bool prefix)
+    let row = 999i32.to_be_bytes().to_vec();
 
     buf.extend_from_slice(&(row.len() as i32).to_be_bytes());
     buf.extend_from_slice(&(row.len() as i32).to_be_bytes());

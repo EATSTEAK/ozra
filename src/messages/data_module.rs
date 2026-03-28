@@ -775,14 +775,16 @@ mod tests {
         let alice = "Alice";
         row1_data.extend_from_slice(&(alice.len() as u16).to_be_bytes());
         row1_data.extend_from_slice(alice.as_bytes());
-        row1_data.extend_from_slice(&30i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
+        row1_data.push(0x00); // Integer: bool prefix (not null)
+        row1_data.extend_from_slice(&30i32.to_be_bytes()); // Integer: i32 value
 
         let mut row2_data = Vec::new();
         row2_data.push(0x00); // VarChar not null
         let bob = "Bob";
         row2_data.extend_from_slice(&(bob.len() as u16).to_be_bytes());
         row2_data.extend_from_slice(bob.as_bytes());
-        row2_data.extend_from_slice(&25i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
+        row2_data.push(0x00); // Integer: bool prefix (not null)
+        row2_data.extend_from_slice(&25i32.to_be_bytes()); // Integer: i32 value
 
         let row1_offset = 0i32;
         let row2_offset = row1_data.len() as i32;
@@ -1009,8 +1011,8 @@ mod tests {
         buf.extend_from_slice(&10i32.to_be_bytes());
 
         let row1_data: Vec<u8> = {
-            let mut v = vec![0x00]; // SmallInt: bool prefix not null
-            v.extend_from_slice(&42i32.to_be_bytes());
+            let mut v = Vec::new();
+            v.extend_from_slice(&42i32.to_be_bytes()); // SmallInt: sentinel i32, no bool prefix
             v
         };
         let row2_data: Vec<u8> = vec![0x01];
@@ -1095,7 +1097,8 @@ mod tests {
         buf.extend_from_slice(&5i32.to_be_bytes());
         buf.extend_from_slice(&(-1i32).to_be_bytes());
 
-        buf.extend_from_slice(&42i32.to_be_bytes()); // Integer: sentinel i32, no bool prefix
+        buf.push(0x00); // Integer: bool prefix (not null)
+        buf.extend_from_slice(&42i32.to_be_bytes()); // Integer: i32 value
 
         let err = parse_data_module(&buf).unwrap_err();
         assert!(matches!(err, OzError::UnexpectedEof { .. }));
