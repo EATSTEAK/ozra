@@ -351,10 +351,7 @@ impl OzResponse for RepositoryResponse {
 
         if size > reader.remaining() {
             return Err(OzError::RepositoryParseError {
-                detail: format!(
-                    "EOF: expected {size} bytes, have {}",
-                    reader.remaining()
-                ),
+                detail: format!("EOF: expected {size} bytes, have {}", reader.remaining()),
             });
         }
 
