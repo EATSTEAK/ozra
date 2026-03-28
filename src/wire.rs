@@ -417,20 +417,40 @@ impl<const N: usize> BufWriter<N> {
 
     /// Java Modified UTF-8 문자열을 씁니다.
     ///
-    /// 형식: `[2B byteLength] + [byteLength × 1B Modified UTF-8]`
+    /// 형식:
+    /// - 길이 ≤ 65535 바이트: `[2B byteLength] + [byteLength × 1B Modified UTF-8]`
+    /// - 길이 > 65535 바이트: `[2B 0xFFFF sentinel] + [4B i32 byteLength] + [byteLength × 1B Modified UTF-8]`
     ///
     /// `cesu8::to_java_cesu8()`를 사용하여 null 문자(`\0`)를 `0xC0 0x80`으로,
     /// 보충 문자(U+10000 이상)를 surrogate pair로 인코딩합니다.
     pub fn write_utf(&mut self, s: &str) -> Result<()> {
         let cesu8_bytes = cesu8::to_java_cesu8(s);
         let byte_len = cesu8_bytes.len();
-        let total_needed = 2 + byte_len;
-        self.ensure(total_needed)?;
 
-        // byteLength 기록 (2B)
-        let len_bytes = (byte_len as u16).to_be_bytes();
-        self.buf[self.offset..self.offset + 2].copy_from_slice(&len_bytes);
-        self.offset += 2;
+        if byte_len <= 0xFFFF {
+            // 짧은 문자열: [2B u16 length] + [data]
+            let total_needed = 2 + byte_len;
+            self.ensure(total_needed)?;
+
+            // byteLength 기록 (2B)
+            let len_bytes = (byte_len as u16).to_be_bytes();
+            self.buf[self.offset..self.offset + 2].copy_from_slice(&len_bytes);
+            self.offset += 2;
+        } else {
+            // 긴 문자열: [2B 0xFFFF sentinel] + [4B i32 length] + [data]
+            let total_needed = 2 + 4 + byte_len;
+            self.ensure(total_needed)?;
+
+            // 0xFFFF sentinel 기록 (2B)
+            let sentinel_bytes = 0xFFFF_u16.to_be_bytes();
+            self.buf[self.offset..self.offset + 2].copy_from_slice(&sentinel_bytes);
+            self.offset += 2;
+
+            // 실제 길이 기록 (4B, i32)
+            let len_bytes = (byte_len as i32).to_be_bytes();
+            self.buf[self.offset..self.offset + 4].copy_from_slice(&len_bytes);
+            self.offset += 4;
+        }
 
         // Modified UTF-8 바이트 기록
         self.buf[self.offset..self.offset + byte_len].copy_from_slice(&cesu8_bytes);
