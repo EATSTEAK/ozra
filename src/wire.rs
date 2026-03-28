@@ -194,12 +194,30 @@ impl<'a> BufReader<'a> {
 
     /// Java Modified UTF-8 문자열을 읽습니다.
     ///
-    /// 형식: `[2B byteLength] + [byteLength × 1B UTF-8]`
+    /// 형식:
+    /// - 길이 ≤ 65535 바이트: `[2B byteLength] + [byteLength × 1B Modified UTF-8]`
+    /// - 길이 > 65535 바이트: `[2B 0xFFFF sentinel] + [4B i32 byteLength] + [byteLength × 1B Modified UTF-8]`
     ///
     /// Java Modified UTF-8에서 null 문자(`\0`)는 `0xC0 0x80`으로,
     /// 보충 문자(U+10000 이상)는 surrogate pair로 인코딩됩니다.
+    ///
+    /// 음수 길이가 읽히면 [`OzError::ProtocolError`]를 반환합니다.
     pub fn read_utf(&mut self) -> Result<String> {
-        let byte_len = self.read_u16()? as usize;
+        let prefix = self.read_u16()?;
+        let byte_len = if prefix == 0xFFFF {
+            // 긴 문자열: 실제 길이는 i32로 저장됨
+            let raw_len = self.read_i32()?;
+            if raw_len < 0 {
+                return Err(OzError::ProtocolError {
+                    code: 0,
+                    message: format!("negative utf length after 0xFFFF sentinel: {}", raw_len),
+                });
+            }
+            raw_len as usize
+        } else {
+            // 짧은 문자열: u16이 직접 길이
+            prefix as usize
+        };
         let bytes = self.read_bytes(byte_len)?;
         decode_modified_utf8(bytes)
     }
