@@ -674,29 +674,12 @@ impl OzClient {
     }
 }
 
-/// OZ 클라이언트 빌더
-///
-/// [`OzClient`]를 유연하게 구성할 수 있는 빌더 패턴을 제공합니다.
-/// 재시도 정책 등 선택적 설정을 체이닝 방식으로 구성할 수 있습니다.
-///
-/// # 예시
-///
-/// ```no_run
-/// use ozra::client::{OzClientBuilder, RetryPolicy};
-/// use std::time::Duration;
-///
-/// # fn example() -> ozra::error::Result<()> {
-/// let client = OzClientBuilder::new("https://example.com/oz70", "guest", "guest")
-///     .retry_policy(RetryPolicy::new(3, Duration::from_millis(100)))
-///     .build()?;
-/// # Ok(())
-/// # }
-/// ```
 pub struct OzClientBuilder {
     base_url: String,
     username: String,
     password: String,
     retry_policy: RetryPolicy,
+    http: Option<Client>,
 }
 
 impl OzClientBuilder {
@@ -709,6 +692,7 @@ impl OzClientBuilder {
             username: username.to_string(),
             password: password.to_string(),
             retry_policy: RetryPolicy::default(),
+            http: None,
         }
     }
 
@@ -722,6 +706,15 @@ impl OzClientBuilder {
         self
     }
 
+    /// 커스텀 reqwest 클라이언트를 설정합니다.
+    ///
+    /// 직접 구성한 `reqwest::Client`를 전달하면 빌드 시 기본 클라이언트 대신 사용합니다.
+    /// cookie_store가 활성화되어 있어야 세션 관리가 정상 동작합니다.
+    pub fn http_client(mut self, client: Client) -> Self {
+        self.http = Some(client);
+        self
+    }
+
     /// [`OzClient`]를 빌드합니다.
     ///
     /// reqwest::Client를 생성하고 설정된 값들로 `OzClient`를 구성합니다.
@@ -730,10 +723,13 @@ impl OzClientBuilder {
     ///
     /// - [`OzError::Http`] — reqwest 클라이언트 빌드 실패
     pub fn build(self) -> Result<OzClient> {
-        let http = Client::builder()
-            .cookie_store(true)
-            .user_agent(USER_AGENT)
-            .build()?;
+        let http = match self.http {
+            Some(client) => client,
+            None => Client::builder()
+                .cookie_store(true)
+                .user_agent(USER_AGENT)
+                .build()?,
+        };
 
         Ok(OzClient {
             http,
